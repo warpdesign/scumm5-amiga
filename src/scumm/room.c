@@ -78,6 +78,71 @@ void set_pal_color(int idx, int r, int gr, int b)
 	g.current_palette[idx * 3 + 2] = (uint8_t)b;
 }
 
+/* ---- colour cycling (ScummVM palette.cpp initCycl, cyclePalette) ---- */
+
+static void init_cycles(const uint8_t *ptr)
+{
+	int j;
+
+	memset(g.color_cycle, 0, sizeof(g.color_cycle));
+	while ((j = *ptr++) != 0) {
+		struct color_cycle *c;
+		int freq;
+		if (j > NUM_COLOR_CYCLES)
+			fatal("init_cycles: cycle", j, 0);
+		c = &g.color_cycle[j - 1];
+		ptr += 2;
+		freq = ptr[0] << 8 | ptr[1];
+		c->delay = (uint16_t)(freq ? 16384 / freq : 0);
+		c->flags = (uint16_t)(ptr[2] << 8 | ptr[3]);
+		c->start = ptr[4];
+		c->end = ptr[5];
+		ptr += 6;
+	}
+}
+
+static void rotate(uint8_t *pal, int start, int end, int size, int forward)
+{
+	uint8_t tmp[3];
+	uint8_t *first = pal + start * size, *last = pal + end * size;
+
+	if (forward) {
+		memcpy(tmp, last, (size_t)size);
+		memmove(first + size, first, (size_t)((end - start) * size));
+		memcpy(first, tmp, (size_t)size);
+	} else {
+		memcpy(tmp, first, (size_t)size);
+		memmove(first, first + size, (size_t)((end - start) * size));
+		memcpy(last, tmp, (size_t)size);
+	}
+}
+
+void cycle_palette(void)
+{
+	struct color_cycle *c;
+	int add = VAR(VAR_TIMER), i, k;
+
+	if (add < VAR(VAR_TIMER_NEXT))
+		add = VAR(VAR_TIMER_NEXT);
+	for (i = 0, c = g.color_cycle; i < NUM_COLOR_CYCLES; i++, c++) {
+		int forward, num;
+		if (!c->delay || c->start > c->end)
+			continue;
+		c->counter = (uint16_t)(c->counter + add);
+		if (c->counter < c->delay)
+			continue;
+		c->counter %= c->delay;
+		forward = !(c->flags & 2);
+		rotate(g.current_palette, c->start, c->end, 3, forward);
+		num = c->end - c->start + 1;
+		for (k = 0; k < 256; k++)
+			if (g.shadow_palette[k] >= c->start && g.shadow_palette[k] <= c->end)
+				g.shadow_palette[k] = (uint8_t)((g.shadow_palette[k] - c->start + (forward ? 1 : num - 1)) % num + c->start);
+		rotate(g.shadow_palette, c->start, c->end, 1, forward);
+		palette_dirty = 1;
+	}
+}
+
 void darken_palette(int red, int green, int blue, int start, int end)
 {
 	const uint8_t *room, *cptr;
@@ -189,6 +254,10 @@ static void reset_room_sub_blocks(void)
 		memcpy(g.current_palette, room + g.clut_offs, 768);
 		palette_dirty = 1;
 	}
+
+	ptr = res_find(TAG('C', 'Y', 'C', 'L'), room);
+	if (ptr)
+		init_cycles(ptr + 8);
 }
 
 /* ---- startScene ---- */

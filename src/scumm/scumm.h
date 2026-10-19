@@ -451,6 +451,7 @@ uint8_t *script_base(const struct script_slot *ss);
 void start_scene(int room, struct actor *a, int object);
 void set_pal_color(int idx, int r, int g, int b);
 void darken_palette(int red, int green, int blue, int start, int end);
+void cycle_palette(void);
 
 /* ---- boxes.c ---- */
 int get_num_boxes(void);

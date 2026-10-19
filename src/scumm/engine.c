@@ -277,6 +277,7 @@ void scumm_loop(int delta)
 
 		g.full_redraw = 0;
 
+		cycle_palette();
 		if (do_effect) {
 			do_effect = 0;
 			fade_in(g.new_effect);
