@@ -818,7 +818,7 @@ static void draw_string(int a, const uint8_t *msg)
 }
 
 /* Lays out a verb's text and returns its extent, as drawVerb does. */
-void layout_verb_text(int slot, struct rect *r)
+void layout_verb_text(int slot, struct rect *r, int color)
 {
 	struct verb_slot *vs = &g.verbs[slot];
 	struct string_tab_part *st = &g.string[4].cur;
@@ -828,7 +828,7 @@ void layout_verb_text(int slot, struct rect *r)
 	st->ypos = vs->cur_rect.top;
 	st->right = SCREEN_WIDTH - 1;
 	st->center = vs->center;
-	st->color = vs->color;
+	st->color = (uint8_t)color;
 	draw_string(4, vs->name);
 	r->left = cs.str.left;
 	r->top = cs.str.top;

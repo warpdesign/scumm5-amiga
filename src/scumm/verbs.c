@@ -17,7 +17,7 @@
 
 enum { CLICK_VERB = 1, CLICK_SCENE = 2, CLICK_INVENTORY = 3, CLICK_KEY = 4 };
 
-void layout_verb_text(int slot, struct rect *r);
+void layout_verb_text(int slot, struct rect *r, int color);
 int find_virt_screen(int y);
 
 int get_verb_slot(int id, int mode)
@@ -73,7 +73,6 @@ void draw_verb(int verb, int mode)
 	struct verb_slot *vs;
 	struct rect r;
 
-	(void)mode;
 	if (!verb)
 		return;
 	vs = &g.verbs[verb];
@@ -86,7 +85,7 @@ void draw_verb(int verb, int mode)
 		restore_verb_bg(verb);
 		if (!vs->name)
 			return;
-		layout_verb_text(verb, &r);
+		layout_verb_text(verb, &r, vs->curmode == 2 ? vs->dimcolor : mode && vs->hicolor ? vs->hicolor : vs->color);
 		vs->cur_rect.right = r.right;
 		vs->cur_rect.bottom = r.bottom;
 		vs->old_rect = r;
