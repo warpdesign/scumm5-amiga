@@ -8,6 +8,7 @@
  * to list here; see the COPYRIGHT file distributed with the ScummVM source.
  */
 #include "scumm.h"
+#include "gfx.h"
 
 #define CHORE_REDIRECT_INIT 56
 #define CHORE_REDIRECT_WALK 57
@@ -335,26 +336,12 @@ void clear_gfx_usage_bits(void)
 	memset(gfx_usage, 0, sizeof(gfx_usage));
 }
 
-/* markRectAsDirty() for the main screen: only the strip usage part. */
-void mark_rect_as_dirty(int left, int right, int top, int bottom, int dirtybit)
-{
-	extern int16_t vs_h[3];
-	int lp, rp;
+extern void (*prof_hook)(int phase);
+#define PROF(n) do { if (prof_hook) prof_hook(n); } while (0)
 
-	if (left > right || top > bottom)
-		return;
-	if (top > vs_h[0] || bottom < 0)
-		return;
-	if (dirtybit) {
-		lp = left / 8 + g.screen_start_strip;
-		if (lp < 0)
-			lp = 0;
-		rp = (right + g.screen_start_strip * 8) / 8;
-		if (rp >= 200)
-			rp = 200;
-		for (; lp <= rp; lp++)
-			set_gfx_usage_bit(lp, dirtybit);
-	}
+int test_gfx_usage_bit_ext(int strip, int bit)
+{
+	return test_gfx_usage_bit(strip, bit);
 }
 
 static void set_actor_redraw_flags(void)
@@ -385,9 +372,13 @@ static void reset_actor_bgs(void)
 		clear_gfx_usage_bit(strip, USAGE_BIT_RESTORED);
 		for (j = 1; j < NUM_ACTORS; j++)
 			if (test_gfx_usage_bit(strip, j) &&
-			    ((g.actors[j].top != 0x7fffffff && g.actors[j].needs_redraw) || g.actors[j].need_bg_reset))
+			    ((g.actors[j].top != 0x7fffffff && g.actors[j].needs_redraw) || g.actors[j].need_bg_reset)) {
 				clear_gfx_usage_bit(strip, j);
+				if (g.actors[j].bottom - g.actors[j].top >= 0)
+					gfx_reset_background(g.actors[j].top, g.actors[j].bottom, i);
+			}
 	}
+	display_sync();
 	for (i = 1; i < NUM_ACTORS; i++)
 		g.actors[i].need_bg_reset = 0;
 }
@@ -399,7 +390,7 @@ static void draw_actor_costume(struct actor *a)
 		return;
 	a->needs_redraw = 0;
 	setup_actor_scale(a);
-	if (costume_draw_extents(a) & 1)
+	if (costume_draw(a) & 1)
 		a->needs_redraw = 1;
 }
 
@@ -411,7 +402,9 @@ void process_actors(void)
 	int n = 0, i, j;
 
 	set_actor_redraw_flags();
+	PROF(9);
 	reset_actor_bgs();
+	PROF(10);
 
 	for (i = 1; i < NUM_ACTORS; i++)
 		if (is_in_current_room(&g.actors[i]))
@@ -425,8 +418,11 @@ void process_actors(void)
 			}
 	for (i = 0; i < n; i++)
 		if (sorted[i]->costume) {
+			PROF(11);
 			draw_actor_costume(sorted[i]);
+			PROF(13);
 			animate_costume(sorted[i]);
+			PROF(10);
 		}
 }
 

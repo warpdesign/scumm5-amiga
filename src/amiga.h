@@ -27,6 +27,23 @@ extern APTR GfxBase;
 /* struct GfxBase offsets */
 #define GFX_ACTIVIEW 34
 #define GFX_COPINIT  38
+#define GFX_VBLANK   160	/* BYTE: vertical blank rate, 50 or 60 */
+
+#define NT_INTERRUPT 2
+#define INTB_VERTB 5
+
+struct Node {
+	struct Node *ln_Succ, *ln_Pred;
+	UBYTE ln_Type;
+	signed char ln_Pri;
+	char *ln_Name;
+};
+
+struct Interrupt {
+	struct Node is_Node;
+	APTR is_Data;
+	void (*is_Code)(void);
+};
 
 #define CUSTOM ((volatile UWORD *)0xdff000)
 #define REG(off) (CUSTOM[(off) / 2])
@@ -112,6 +129,22 @@ static inline void DateStamp(LONG *ds)
 	__asm volatile("jsr -192(%%a6)" : "+r"(d1) : "r"(a6) : "d0", "a0", "a1", "cc", "memory");
 }
 
+static inline void AddIntServer(ULONG num, struct Interrupt *i)
+{
+	register ULONG d0 __asm("d0") = num;
+	register struct Interrupt *a1 __asm("a1") = i;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -168(%%a6)" : "+r"(d0), "+r"(a1) : "r"(a6) : "d1", "a0", "cc", "memory");
+}
+
+static inline void RemIntServer(ULONG num, struct Interrupt *i)
+{
+	register ULONG d0 __asm("d0") = num;
+	register struct Interrupt *a1 __asm("a1") = i;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -174(%%a6)" : "+r"(d0), "+r"(a1) : "r"(a6) : "d1", "a0", "cc", "memory");
+}
+
 static inline void PutStr(const char *s)
 {
 	register const char *d1 __asm("d1") = s;
@@ -124,6 +157,18 @@ static inline void LoadView(APTR view)
 	register APTR a1 __asm("a1") = view;
 	register APTR a6 __asm("a6") = GfxBase;
 	__asm volatile("jsr -222(%%a6)" : "+r"(a1) : "r"(a6) : "d0", "d1", "a0", "cc", "memory");
+}
+
+static inline void OwnBlitter(void)
+{
+	register APTR a6 __asm("a6") = GfxBase;
+	__asm volatile("jsr -456(%%a6)" : : "r"(a6) : "d0", "d1", "a0", "a1", "cc", "memory");
+}
+
+static inline void DisownBlitter(void)
+{
+	register APTR a6 __asm("a6") = GfxBase;
+	__asm volatile("jsr -462(%%a6)" : : "r"(a6) : "d0", "d1", "a0", "a1", "cc", "memory");
 }
 
 static inline void WaitTOF(void)

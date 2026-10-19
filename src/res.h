@@ -25,6 +25,7 @@ struct res_stats {
 	uint32_t loads, hits, evictions, failures;
 	uint32_t used, peak;	/* bytes of resources in the arena */
 	uint32_t directory;	/* bytes of directory tables, outside the arena */
+	uint32_t read_bytes, read_time;	/* read_time in res_clock units */
 };
 
 /* Returns 0 on success; arena_size bytes of chip RAM become the cache. */
@@ -73,6 +74,7 @@ const uint8_t *res_index(uint32_t *size);
 const uint8_t *res_find(uint32_t tag, const uint8_t *block);
 
 const struct res_stats *res_get_stats(void);
+extern uint32_t (*res_clock)(void);	/* optional, for read_time */
 
 #define TAG(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
 

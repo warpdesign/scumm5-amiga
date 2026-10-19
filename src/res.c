@@ -52,11 +52,19 @@ static void *os_alloc(uint32_t n)
 	return p;
 }
 
+uint32_t (*res_clock)(void);
+
 static int read_at(uint32_t offset, void *dest, uint32_t n)
 {
-	if (plat_seek(fh, offset))
-		return -1;
-	return plat_read(fh, dest, n) == (int32_t)n ? 0 : -1;
+	uint32_t t0 = res_clock ? res_clock() : 0;
+	int rc = -1;
+
+	if (!plat_seek(fh, offset))
+		rc = plat_read(fh, dest, n) == (int32_t)n ? 0 : -1;
+	stats.read_bytes += n;
+	if (res_clock)
+		stats.read_time += res_clock() - t0;
+	return rc;
 }
 
 static int read_dir(uint16_t t, uint32_t offset)

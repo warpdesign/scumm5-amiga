@@ -10,6 +10,7 @@
  * ScummVM source.
  */
 #include "scumm.h"
+#include "gfx.h"
 
 extern int16_t vs_h[3];
 
@@ -67,8 +68,11 @@ static void fade_out(int effect)
 
 /* ---- palette ---- */
 
+uint8_t palette_dirty = 1;
+
 void set_pal_color(int idx, int r, int gr, int b)
 {
+	palette_dirty = 1;
 	g.current_palette[idx * 3 + 0] = (uint8_t)r;
 	g.current_palette[idx * 3 + 1] = (uint8_t)gr;
 	g.current_palette[idx * 3 + 2] = (uint8_t)b;
@@ -84,6 +88,7 @@ void darken_palette(int red, int green, int blue, int start, int end)
 	room = res_get(RT_ROOM, g.room_resource);
 	if (!room || !g.clut_offs)
 		return;
+	palette_dirty = 1;
 	cptr = room + g.clut_offs + start * 3;
 	for (j = start; j <= end; j++) {
 		i = *cptr++ * red / 0xFF;
@@ -180,8 +185,10 @@ static void reset_room_sub_blocks(void)
 		}
 	}
 
-	if (g.clut_offs)
+	if (g.clut_offs) {
 		memcpy(g.current_palette, room + g.clut_offs, 768);
+		palette_dirty = 1;
+	}
 }
 
 /* ---- startScene ---- */
@@ -240,6 +247,7 @@ void start_scene(int room, struct actor *a, int object_nr)
 
 	setup_room_sub_blocks();
 	reset_room_sub_blocks();
+	gfx_room_changed();
 	reset_room_objects();
 
 	VAR(VAR_CAMERA_MIN_X) = SCREEN_WIDTH / 2;

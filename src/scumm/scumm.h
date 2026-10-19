@@ -454,6 +454,7 @@ void darken_palette(int red, int green, int blue, int start, int end);
 /* ---- boxes.c ---- */
 int get_num_boxes(void);
 int get_box_flags(int box);
+int get_mask_from_box(int box);
 void set_box_flags(int box, int val);
 int get_box_scale(int box);
 void set_box_scale(int box, int scale);
@@ -507,7 +508,7 @@ void actor_follow_camera(int act);
 /* ---- costume.c ---- */
 void costume_decode_data(struct actor *a, int frame, unsigned usemask);
 int costume_increase_anims(struct actor *a);
-int costume_draw_extents(struct actor *a);
+int costume_draw(struct actor *a);
 
 /* ---- strip usage bits (actor.c) ---- */
 #define USAGE_BIT_RESTORED 95

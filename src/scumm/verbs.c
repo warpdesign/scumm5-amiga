@@ -8,6 +8,7 @@
  * here; see the COPYRIGHT file distributed with the ScummVM source.
  */
 #include "scumm.h"
+#include "gfx.h"
 
 #define MBS_LEFT_CLICK 0x8000
 #define MBS_RIGHT_CLICK 0x4000
@@ -30,19 +31,36 @@ int get_verb_slot(int id, int mode)
 
 static void restore_verb_bg(int verb)
 {
-	g.verbs[verb].old_rect.left = -1;
+	struct verb_slot *vs = &g.verbs[verb];
+
+	if (vs->old_rect.left != -1) {
+		gfx_restore_background(vs->old_rect, vs->bkcolor);
+		vs->old_rect.left = -1;
+	}
 }
 
 static void draw_verb_bitmap(int verb)
 {
 	struct verb_slot *vs = &g.verbs[verb];
-	const uint8_t *imhd;
+	const uint8_t *imhd, *imptr;
+	int v, imgw, imgh, i, xstrip, ydiff;
 
-	if (find_virt_screen(vs->cur_rect.top) < 0 || !vs->name)
+	if ((v = find_virt_screen(vs->cur_rect.top)) < 0 || !vs->name)
 		return;
 	imhd = res_find(TAG('I', 'M', 'H', 'D'), vs->name);
 	if (!imhd)
 		fatal("verb image without IMHD", verb, 0);
+	imgw = rd_le16(imhd + 8 + 12) / 8;
+	imgh = rd_le16(imhd + 8 + 14) / 8;
+	imptr = res_find(TAG('I', 'M', '0', '1'), vs->name);
+	xstrip = vs->cur_rect.left / 8;
+	ydiff = vs->cur_rect.top - vscr[v].topline;
+	if (imptr) {
+		gfx_zbuffer_disabled = 1;
+		for (i = 0; i < imgw; i++)
+			gfx_draw_bitmap(imptr, v, xstrip + i, ydiff, imgw * 8, imgh * 8, i, 1, 3);
+		gfx_zbuffer_disabled = 0;
+	}
 	vs->cur_rect.right = (int16_t)(vs->cur_rect.left + rd_le16(imhd + 8 + 12) / 8 * 8);
 	vs->cur_rect.bottom = (int16_t)(vs->cur_rect.top + rd_le16(imhd + 8 + 14) / 8 * 8);
 	vs->old_rect = vs->cur_rect;

@@ -11,6 +11,7 @@
  * ScummVM source.
  */
 #include "scumm.h"
+#include "gfx.h"
 
 /* virtual screens: 0 main, 1 text, 2 verb */
 int16_t vs_topline[3], vs_h[3];
@@ -34,6 +35,7 @@ static uint8_t use_talk_anims;
 
 void init_screens(int b, int h)
 {
+	gfx_init_screens(b, h);
 	vs_topline[0] = (int16_t)b;
 	vs_h[0] = (int16_t)(h - b);
 	vs_topline[1] = 0;
@@ -208,7 +210,51 @@ static void add_linebreaks(int a, uint8_t *str, int pos, int maxwidth)
 	set_cur_id(old_id);
 }
 
-/* Layout of one glyph, as CharsetRendererClassic::printChar without pixels. */
+/* drawBitsN into a planar virtual screen; on the main screen also sets the
+ * charset mask (mask plane 0) so actors stay behind the text. */
+static void draw_glyph(int v, const uint8_t *src, int bpp, int x0, int y0, int width, int height, int set_mask)
+{
+	const struct vscreen *vs = &vscr[v];
+	int x, y, color, numbits = 8, strip, bit;
+	uint8_t bits = *src++, chunky[8], m;
+
+	for (y = 0; y < height && y + y0 < vs->h; y++) {
+		strip = -1;
+		m = 0;
+		for (x = 0; x <= width; x++) {
+			int sx = x0 + x;
+			int s2 = x < width ? (vs->xstart + sx) >> 3 : -2;
+			if (s2 != strip) {
+				if (m) {
+					uint8_t *d = vs->pixels + (uint32_t)(y + y0) * VS_PITCH + strip;
+					planar_put8(d, chunky, m);
+					if (set_mask) {
+						*gfx_mask_buffer(strip, y + y0, 0) |= m;
+						charset_mask_used = 1;
+					}
+				}
+				strip = s2;
+				m = 0;
+			}
+			if (x == width)
+				break;
+			color = (bits >> (8 - bpp)) & 0xFF;
+			if (color && y + y0 >= 0 && sx >= 0 && sx < SCREEN_WIDTH) {
+				bit = (vs->xstart + sx) & 7;
+				chunky[bit] = g.charset_color_map[color];
+				m |= (uint8_t)(0x80 >> bit);
+			}
+			bits = (uint8_t)(bits << bpp);
+			numbits -= bpp;
+			if (numbits == 0) {
+				bits = *src++;
+				numbits = 8;
+			}
+		}
+	}
+}
+
+/* CharsetRendererClassic::printChar. */
 static void print_char(int chr, int ignore_mask)
 {
 	const uint8_t *fp, *cp;
@@ -261,9 +307,14 @@ static void print_char(int chr, int ignore_mask)
 	if (cs.top < cs.str.top)
 		cs.str.top = cs.top;
 
-	if (!ignore_mask) {
-		charset_has_mask = 1;
-		cs.text_screen_id = (uint8_t)vs;
+	{
+		int draw_top = cs.top - vscr[vs].topline;
+		gfx_mark_rect_dirty(vs, cs.left, cs.left + width, draw_top, draw_top + height, 0);
+		if (!ignore_mask) {
+			charset_has_mask = 1;
+			cs.text_screen_id = (uint8_t)vs;
+		}
+		draw_glyph(vs, cp + 4, fp[0], cs.left, draw_top, width, height, !ignore_mask && vs == 0);
 	}
 
 	cs.left += (int16_t)width;
@@ -388,9 +439,33 @@ static void restore_charset_bg(void)
 	next_left = g.string[0].cur.xpos;
 	next_top = (int16_t)(g.string[0].cur.ypos + g.screen_top);
 	if (charset_has_mask) {
+		struct vscreen *vs = &vscr[cs.text_screen_id];
 		charset_has_mask = 0;
 		cs.str.left = -1;
 		cs.left = -1;
+		if (!vs->h)
+			return;
+		gfx_mark_rect_dirty(cs.text_screen_id, 0, SCREEN_WIDTH, 0, vs->h, USAGE_BIT_RESTORED);
+		if (cs.text_screen_id == 0) {
+			/* text lives in the main screen under the charset mask */
+			int y, k, p, lights = (VAR(VAR_CURRENT_LIGHTS) & 2) && g.current_room != 0;
+			for (y = 0; y < vs->h; y++) {
+				uint8_t *m = gfx_screen_mask_buffer(0, y, 0);
+				uint8_t *f = vs_pixels(vs, 0, y), *b = vs_back_pixels(vs, 0, y);
+				for (k = 0; k < NUM_STRIPS; k++) {
+					uint8_t mb = m[k];
+					if (!mb)
+						continue;
+					for (p = 0; p < 8; p++)
+						f[k + p * VS_PLANE] = (uint8_t)((f[k + p * VS_PLANE] & ~mb) |
+										(lights ? (b[k + p * VS_PLANE] & mb) : 0));
+					m[k] = 0;
+				}
+			}
+			charset_mask_used = 0;
+		} else {
+			memset(vs->pixels, 0, vs->size);
+		}
 	}
 }
 

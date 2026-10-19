@@ -2,15 +2,21 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Usage: scummrun PACK [FRAMES] [-t TRACE] [-r DEMO.REC] [-a ARENA_KB]
+ *                 [-d DIR -f FIRST -e EVERY]   (host: dump frames as PPM)
  * Boots the game and runs FRAMES main-loop iterations (default 2000)
  * without display or sound, optionally writing a ScummVM-format trace.
  */
 #include "scumm/scumm.h"
 #include "util.h"
 
+#ifndef AMIGA
+void display_host_dump(const char *dir, uint32_t first, uint32_t every);
+#endif
+
 int app_main(int argc, char **argv)
 {
-	const char *p, *pack = 0, *trace = 0, *rec = 0;
+	const char *p, *pack = 0, *trace = 0, *rec = 0, *dump = 0;
+	uint32_t dump_first = 1, dump_every = 1;
 	uint32_t frames = 2000, arena = 400, i, t0, jiffies = 0;
 	int n;
 
@@ -24,6 +30,12 @@ int app_main(int argc, char **argv)
 				rec = p;
 			else if (opt == 'a')
 				arena = parse_uint(&p);
+			else if (opt == 'd')
+				dump = p;
+			else if (opt == 'f')
+				dump_first = parse_uint(&p);
+			else if (opt == 'e')
+				dump_every = parse_uint(&p);
 		} else if (!pack) {
 			pack = argv[n];
 		} else {
@@ -38,6 +50,14 @@ int app_main(int argc, char **argv)
 
 	if (trace)
 		trace_open(trace);
+#ifndef AMIGA
+	if (dump)
+		display_host_dump(dump, dump_first, dump_every);
+#else
+	(void)dump;
+	(void)dump_first;
+	(void)dump_every;
+#endif
 	if (engine_init(pack, arena * 1024)) {
 		report("scummrun: cannot open pack");
 		return 20;

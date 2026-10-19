@@ -10,13 +10,14 @@
  * ScummVM source.
  */
 #include "scumm.h"
+#include "gfx.h"
 
 #define LIGHTMODE_ACTOR_USE_BASE_PALETTE 1
 #define LIGHTMODE_ROOM_LIGHTS_ON 2
 #define LIGHTMODE_ACTOR_USE_COLORS 8
 
 extern uint8_t do_effect;
-extern uint8_t charset_has_mask;
+extern uint8_t palette_dirty;
 int charset_cur_id(void);
 
 static int is_costume_in_use(int cost)
@@ -167,6 +168,22 @@ void engine_boot(void)
 	run_script(1, 0, 0, args);
 }
 
+void (*prof_hook)(int phase);
+#define PROF(n) do { if (prof_hook) prof_hook(n); } while (0)
+
+static void draw_screen(void)
+{
+	if (palette_dirty) {
+		display_set_palette(g.current_palette);
+		palette_dirty = 0;
+	}
+	PROF(6);
+	gfx_draw_dirty_screen_parts();
+	PROF(7);
+	display_present();
+	PROF(8);
+}
+
 void scumm_loop(int delta)
 {
 	int old_ego;
@@ -188,6 +205,7 @@ void scumm_loop(int delta)
 
 	old_ego = VAR(VAR_EGO);
 
+	PROF(0);
 	process_input();
 
 	playback_pump();
@@ -201,31 +219,32 @@ void scumm_loop(int delta)
 
 	sound_update_music_timer();
 
+	PROF(1);
 	run_all_scripts();
 	check_exec_verbs();
 	check_and_run_sentence_script();
+	PROF(2);
 
 	if (g.quit)
 		return;
 
 	if (g.current_room == 0) {
 		display_dialog();
+		draw_screen();
 	} else {
 		walk_actors();
 		move_camera();
 		update_object_states();
 		display_dialog();
 
+		PROF(3);
 		if (g.camera.cur.x != g.camera.last.x || g.camera.cur.y != g.camera.last.y ||
-		    g.bg_needs_redraw || g.full_redraw) {
-			/* redrawBGAreas(): text is drawn over the room, so scrolling removes it */
-			if (g.camera.cur.x != g.camera.last.x && charset_has_mask)
-				stop_talk();
-			g.bg_needs_redraw = 0;
-		}
-		g.draw_queue_nr = 0;
-
+		    g.bg_needs_redraw || g.full_redraw)
+			gfx_redraw_bg_areas();
+		gfx_process_draw_queue();
+		PROF(4);
 		process_actors();
+		PROF(5);
 
 		g.full_redraw = 0;
 
@@ -236,6 +255,7 @@ void scumm_loop(int delta)
 		}
 
 		handle_mouse_over(old_ego != VAR(VAR_EGO));
+		draw_screen();
 		play_actor_sounds();
 	}
 

@@ -35,14 +35,15 @@ Pack layout, all big-endian, blobs 4-byte aligned:
   directory entry:  u32 offset, u32 size, u32 checksum (all 0: absent)
   background entry: u32 offset, u32 size, u32 checksum,
                     u16 padded width, u16 height, u16 width, u16 0,
-                    u32 RMIM offset and u32 RMIM size in the original ROOM
-                    block (lets traces report original script offsets)
+                    u32 0, u32 0 (formerly the RMIM location; rooms now
+                    keep RMIM)
 
 Resources are stored un-XORed and byte-identical to what ScummVM holds in
-memory, except: a room is its ROOM block without RMIM (the background
-lives in the background directory, as interleaved 8-bitplane rows padded
-to 64 px); a sound is the one SOU sub-block ScummVM picks for General MIDI
-output. The index blob holds the MAXS and DOBJ blocks of the index file.
+memory, except that a sound is the one SOU sub-block ScummVM picks for
+General MIDI output. Room backgrounds are also stored decoded, as
+interleaved 8-bitplane rows padded to 64 px, for tools that show a room
+without the interpreter (roomview). The index blob holds the MAXS and DOBJ
+blocks of the index file.
 """
 
 import argparse
@@ -84,19 +85,6 @@ def read_index(idx):
         elif tag in ('MAXS', 'DOBJ'):
             keep.append(idx[p:p + size])
     return lists, b''.join(keep)
-
-
-def strip_rmim(data, off):
-    """ROOM block without RMIM, plus RMIM's offset and size in the original."""
-    size = struct.unpack_from('>I', data, off + 4)[0]
-    parts, rmim = [], (0, 0)
-    for t, p, s in blocks(data, off + 8, off + size):
-        if t == 'RMIM':
-            rmim = (p - off, s)
-        else:
-            parts.append(data[p:p + s])
-    body = b''.join(parts)
-    return b'ROOM' + struct.pack('>I', len(body) + 8) + body, rmim
 
 
 def pick_sound(data, off):
@@ -194,7 +182,8 @@ def build(index_path, data_paths, verbose):
             if data[off:off + 4] != TAGS[t]:
                 raise ValueError('%s %d: expected %s at %d, found %r' % (NAMES[t], i, TAGS[t], off, data[off:off + 4]))
             if t == 0:
-                res, rmim = strip_rmim(data, off)
+                res = data[off:off + struct.unpack_from('>I', data, off + 4)[0]]
+                rmim = (0, 0)
                 width, height, _, pixels = decode_room(data, off)
                 pw, planes = to_planar(width, height, pixels, table)
                 bg_dir += struct.pack('>IIIHHHHII', w.blob(planes), len(planes), checksum(planes), pw, height, width, 0,

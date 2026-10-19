@@ -32,6 +32,12 @@ int get_num_boxes(void)
 	return g.box_data ? (uint8_t)rd_le16(g.box_data) : 0;
 }
 
+int get_mask_from_box(int box)
+{
+	uint8_t *p = box_base(box);
+	return p ? p[16] : 0;
+}
+
 int get_box_flags(int box)
 {
 	uint8_t *p = box_base(box);

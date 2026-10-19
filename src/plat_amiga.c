@@ -149,6 +149,32 @@ void *memcpy(void *d, const void *s, size_t n)
 {
 	uint8_t *dp = d;
 	const uint8_t *sp = s;
+
+	if (n >= 8 && !(((uintptr_t)dp ^ (uintptr_t)sp) & 1)) {
+		if ((uintptr_t)dp & 1) {
+			*dp++ = *sp++;
+			n--;
+		}
+		{
+			uint32_t *dl = (uint32_t *)dp;
+			const uint32_t *sl = (const uint32_t *)sp;
+			size_t l = n >> 4;
+			while (l--) {
+				dl[0] = sl[0];
+				dl[1] = sl[1];
+				dl[2] = sl[2];
+				dl[3] = sl[3];
+				dl += 4;
+				sl += 4;
+			}
+			l = (n >> 2) & 3;
+			while (l--)
+				*dl++ = *sl++;
+			dp = (uint8_t *)dl;
+			sp = (const uint8_t *)sl;
+			n &= 3;
+		}
+	}
 	while (n--)
 		*dp++ = *sp++;
 	return d;
@@ -158,7 +184,7 @@ void *memmove(void *d, const void *s, size_t n)
 {
 	uint8_t *dp = d;
 	const uint8_t *sp = s;
-	if (dp <= sp)
+	if (dp <= sp || dp >= sp + n)
 		return memcpy(d, s, n);
 	dp += n;
 	sp += n;
@@ -170,6 +196,24 @@ void *memmove(void *d, const void *s, size_t n)
 void *memset(void *d, int c, size_t n)
 {
 	uint8_t *dp = d;
+
+	if (n >= 8) {
+		uint32_t v = (uint8_t)c;
+		v |= v << 8;
+		v |= v << 16;
+		if ((uintptr_t)dp & 1) {
+			*dp++ = (uint8_t)c;
+			n--;
+		}
+		{
+			uint32_t *dl = (uint32_t *)dp;
+			size_t l = n >> 2;
+			while (l--)
+				*dl++ = v;
+			dp = (uint8_t *)dl;
+			n &= 3;
+		}
+	}
 	while (n--)
 		*dp++ = (uint8_t)c;
 	return d;

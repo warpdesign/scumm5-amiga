@@ -8,6 +8,7 @@
  * COPYRIGHT file distributed with the ScummVM source.
  */
 #include "scumm.h"
+#include "gfx.h"
 
 #define PARAM_1 0x80
 #define PARAM_2 0x40
@@ -1016,12 +1017,15 @@ static void o5_matrix_ops(void)
 
 static void o5_draw_box(void)
 {
-	get_word_param(PARAM_1);
-	get_word_param(PARAM_2);
+	int x, y, x2, y2, color;
+
+	x = get_word_param(PARAM_1);
+	y = get_word_param(PARAM_2);
 	g.opcode = fetch_byte();
-	get_word_param(PARAM_1);
-	get_word_param(PARAM_2);
-	get_byte_param(PARAM_3);
+	x2 = get_word_param(PARAM_1);
+	y2 = get_word_param(PARAM_2);
+	color = get_byte_param(PARAM_3);
+	gfx_draw_box(x, y, x2, y2, color);
 }
 
 /* ---- sound ---- */

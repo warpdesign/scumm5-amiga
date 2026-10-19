@@ -167,24 +167,315 @@ static const uint8_t small_costume_scale_table[256] = {
 	0x0E, 0x8E, 0x4E, 0xCE, 0x2E, 0xAE, 0x6E, 0xEE, 0x1E, 0x9E, 0x5E, 0xDE, 0x3E, 0xBE, 0x7E, 0xFE
 };
 
+#include "gfx.h"
+
 extern int16_t vs_h[3];
+
+#define LIGHTMODE_ACTOR_USE_COLORS 8
+
+static uint8_t *scratch;	/* chunky main screen: SCREEN_WIDTH x vs h */
+static uint8_t *scratch_wr;	/* bit per scratch pixel: written */
+static int scratch_h;
 
 struct cel_state {
 	int actor_x, actor_y, scale_x, scale_y, to_right, out_h;
 	int x_move, y_move;
 	int32_t draw_top, draw_bottom;
 	int actor_id;
+	int shr, mask;
+	int zbuf, shadow_mode;
+	uint8_t palette[32];
+	int min_x, max_x, min_y, max_y;
+	int draw;			/* 0: extents only */
 };
 
-/* BaseCostumeRenderer::paintCelByleRLECommon up to the point where pixels
- * would be decoded: the cel rectangle, strip usage and vertical extent. */
-static int cel_extent(struct cel_state *st, int x_move_cur, int y_move_cur, int width, int height)
+struct rle {
+	const uint8_t *src;
+	int x, y, skip_width, scale_x_index, scale_y_index, scale_x_step;
+	int rep_len, rep_color;
+};
+
+static void skip_cel_lines(struct rle *r, int height, int shr, int mask, int num)
+{
+	num *= height;
+	for (;;) {
+		r->rep_len = *r->src++;
+		r->rep_color = r->rep_len >> shr;
+		r->rep_len &= mask;
+		if (!r->rep_len)
+			r->rep_len = *r->src++;
+		if ((num -= r->rep_len) <= 0) {
+			r->rep_len = 1 - num;
+			return;
+		}
+	}
+}
+
+static int dst_pixel(int x, int y)
+{
+	uint32_t i = (uint32_t)y * SCREEN_WIDTH + (uint32_t)x;
+	if (scratch_wr[i >> 3] & (0x80 >> (i & 7)))
+		return scratch[i];
+	return planar_get_pixel(vs_pixels(&vscr[0], x, y), (vscr[0].xstart + x) & 7);
+}
+
+/* BaseCostumeRenderer::byleRLEDecode into the chunky scratch. Runs of
+ * transparent pixels are skipped in one step when the actor is not scaled
+ * vertically; this changes nothing visible, only the work done. */
+static void rle_decode(struct cel_state *st, struct rle *r, int width, int height)
+{
+	const uint8_t *table = small_costume_scale_table;
+	const uint8_t *src = r->src, *zmask, *cmask;
+	int len = r->rep_len, color = r->rep_color;
+	int y = r->y, h = height, scale_index_y = r->scale_y_index;
+	int bounds_bottom = st->out_h, unscaled_y = st->scale_y == 255;
+	int col_min_y = 0x7fff, col_max_y = -1;
+	uint8_t maskbit = (uint8_t)(0x80 >> (r->x & 7));
+
+	(void)width;
+	zmask = gfx_screen_mask_buffer(0, 0, st->zbuf);
+	cmask = gfx_screen_mask_buffer(0, 0, 0);
+
+	if (len)
+		goto start;
+	for (;;) {
+		len = *src++;
+		color = len >> st->shr;
+		len &= st->mask;
+		if (!len)
+			len = *src++;
+		if (!color && unscaled_y) {
+			/* transparent run: advance down the columns */
+			for (;;) {
+				int n = len < h ? len : h;
+				y += n;
+				h -= n;
+				len -= n;
+				if (h)
+					break;
+				if (!--r->skip_width)
+					goto done;
+				h = height;
+				y = r->y;
+				if (st->scale_x == 255 || table[r->scale_x_index] < st->scale_x) {
+					if (col_max_y >= 0) {
+						if (r->x < st->min_x) st->min_x = r->x;
+						if (r->x > st->max_x) st->max_x = r->x;
+					}
+					r->x += r->scale_x_step;
+					if (r->x < 0 || r->x >= SCREEN_WIDTH)
+						goto done;
+					maskbit = (uint8_t)(0x80 >> (r->x & 7));
+				}
+				r->scale_x_index = (r->scale_x_index + r->scale_x_step) & 0xFF;
+				if (!len)
+					break;
+			}
+			continue;
+		}
+		do {
+			if (unscaled_y || table[scale_index_y++ & 0xFF] < st->scale_y) {
+				if (color && y >= 0 && y < bounds_bottom) {
+					uint32_t mo = (uint32_t)y * NUM_STRIPS + (uint32_t)(r->x >> 3);
+					if (!((zmask[mo] | cmask[mo]) & maskbit)) {
+						int pcolor;
+						uint32_t i = (uint32_t)y * SCREEN_WIDTH + (uint32_t)r->x;
+						if (st->shadow_mode & 0x20) {
+							pcolor = g.shadow_palette[dst_pixel(r->x, y)];
+						} else {
+							pcolor = st->palette[color];
+							if (pcolor == 13)
+								pcolor = g.shadow_palette[dst_pixel(r->x, y)];
+						}
+						scratch[i] = (uint8_t)pcolor;
+						scratch_wr[i >> 3] |= (uint8_t)(0x80 >> (i & 7));
+						if (y < col_min_y)
+							col_min_y = y;
+						if (y > col_max_y)
+							col_max_y = y;
+					}
+				}
+				y++;
+			}
+			if (!--h) {
+				if (col_max_y >= 0) {
+					if (r->x < st->min_x) st->min_x = r->x;
+					if (r->x > st->max_x) st->max_x = r->x;
+				}
+				if (!--r->skip_width)
+					goto done;
+				h = height;
+				y = r->y;
+				scale_index_y = r->scale_y_index;
+				if (st->scale_x == 255 || table[r->scale_x_index] < st->scale_x) {
+					r->x += r->scale_x_step;
+					if (r->x < 0 || r->x >= SCREEN_WIDTH)
+						goto done;
+					maskbit = (uint8_t)(0x80 >> (r->x & 7));
+				}
+				r->scale_x_index = (r->scale_x_index + r->scale_x_step) & 0xFF;
+			}
+start:;
+		} while (--len);
+	}
+done:
+	if (col_max_y >= 0) {
+		if (r->x < st->min_x) st->min_x = r->x;
+		if (r->x > st->max_x) st->max_x = r->x;
+	}
+	if (col_min_y < st->min_y)
+		st->min_y = col_min_y;
+	if (col_max_y > st->max_y)
+		st->max_y = col_max_y;
+}
+
+/* rle_decode by whole runs: a run of source rows [cy, cy + n) of one
+ * colour covers clipped output rows [yclip[cy], yclip[cy + n]), yclip[]
+ * advancing on the rows vertical scaling keeps. Extents are conservative
+ * (masked pixels count); the flush skips them. */
+#define MAX_CEL_H 511
+static void rle_decode_runs(struct cel_state *st, struct rle *r, int height)
+{
+	static int16_t yclip[MAX_CEL_H + 1];
+	static uint32_t moff[MAX_CEL_H + 1];
+	const uint8_t *table = small_costume_scale_table;
+	const uint8_t *src = r->src, *pal = st->palette;
+	const uint8_t *zmask = gfx_screen_mask_buffer(0, 0, st->zbuf);
+	const uint8_t *cmask = gfx_screen_mask_buffer(0, 0, 0);
+	const uint8_t *zc, *cc;
+	uint8_t *wc, *sc;
+	int len = r->rep_len ? r->rep_len - 1 : 0, color = r->rep_color;
+	int h = height, x = r->x, bottom = st->out_h;
+	int shr = st->shr, msk = st->mask, scale_x = st->scale_x, scale_y = st->scale_y;
+	int skip_width = r->skip_width, sxi = r->scale_x_index, sx_step = r->scale_x_step;
+	int min_x = st->min_x, max_x = st->max_x, col_written = 0, any_written = 0;
+	int shadow_all = (st->shadow_mode & 0x20) != 0;
+	/* 0: no masks, 1: z-plane or charset mask only (zc), 2: both */
+	int mode = zmask != cmask ? (charset_mask_used ? 2 : 1) : (charset_mask_used ? 1 : 0);
+	uint8_t maskbit = (uint8_t)(0x80 >> (x & 7));
+	int k, oy = r->y;
+
+	/* source row k starts at clipped output row yclip[k] */
+	for (k = 0; k <= height; k++) {
+		yclip[k] = (int16_t)(oy < 0 ? 0 : oy > bottom ? bottom : oy);
+		moff[k] = (uint32_t)yclip[k] * NUM_STRIPS;
+		if (k < height && (scale_y == 255 || table[(r->scale_y_index + k) & 0xFF] < scale_y))
+			oy++;
+	}
+	zc = zmask + (x >> 3);
+	cc = cmask + (x >> 3);
+	wc = scratch_wr + (x >> 3);
+	sc = scratch + x;
+	for (;;) {
+		while (len) {
+			int n = len < h ? len : h, cy = height - h;
+			if (color) {
+				int ya = yclip[cy], yb = yclip[cy + n];
+				if (ya < yb) {
+					uint32_t off = moff[cy];
+					const uint8_t *zm = zc + off, *cm = cc + off;
+					uint8_t *wp = wc + off, *sp = sc + (off << 3);
+					int pc = pal[color], yy = yb - ya;
+					if (shadow_all || pc == 13) {
+						for (yy = ya; yy < yb; yy++, zm += NUM_STRIPS, cm += NUM_STRIPS, wp += NUM_STRIPS, sp += SCREEN_WIDTH)
+							if (!((*zm | *cm) & maskbit)) {
+								*sp = g.shadow_palette[dst_pixel(x, yy)];
+								*wp |= maskbit;
+							}
+					} else if (mode == 0) {
+						do {
+							*sp = (uint8_t)pc;
+							*wp |= maskbit;
+							wp += NUM_STRIPS;
+							sp += SCREEN_WIDTH;
+						} while (--yy);
+					} else if (mode == 1) {
+						do {
+							if (!(*zm & maskbit)) {
+								*sp = (uint8_t)pc;
+								*wp |= maskbit;
+							}
+							zm += NUM_STRIPS;
+							wp += NUM_STRIPS;
+							sp += SCREEN_WIDTH;
+						} while (--yy);
+					} else {
+						do {
+							if (!((*zm | *cm) & maskbit)) {
+								*sp = (uint8_t)pc;
+								*wp |= maskbit;
+							}
+							zm += NUM_STRIPS;
+							cm += NUM_STRIPS;
+							wp += NUM_STRIPS;
+							sp += SCREEN_WIDTH;
+						} while (--yy);
+					}
+					col_written = 1;
+				}
+			}
+			h -= n;
+			len -= n;
+			if (!h) {
+				if (col_written) {
+					if (x < min_x) min_x = x;
+					if (x > max_x) max_x = x;
+					col_written = 0;
+					any_written = 1;
+				}
+				if (!--skip_width)
+					goto done;
+				h = height;
+				if (scale_x == 255 || table[sxi] < scale_x) {
+					x += sx_step;
+					if (x < 0 || x >= SCREEN_WIDTH)
+						goto done;
+					maskbit = (uint8_t)(0x80 >> (x & 7));
+					zc = zmask + (x >> 3);
+					cc = cmask + (x >> 3);
+					wc = scratch_wr + (x >> 3);
+					sc = scratch + x;
+				}
+				sxi = (sxi + sx_step) & 0xFF;
+			}
+		}
+		len = *src++;
+		color = len >> shr;
+		len &= msk;
+		if (!len)
+			len = *src++;
+	}
+done:
+	if (col_written) {
+		if (x < min_x) min_x = x;
+		if (x > max_x) max_x = x;
+		any_written = 1;
+	}
+	st->min_x = min_x;
+	st->max_x = max_x;
+	if (any_written) {
+		if (yclip[0] < st->min_y)
+			st->min_y = yclip[0];
+		if (yclip[height] - 1 > st->max_y)
+			st->max_y = yclip[height] - 1;
+	}
+}
+
+/* BaseCostumeRenderer::paintCelByleRLECommon and ClassicCostumeRenderer::
+ * paintCelByleRLE: cel rectangle, strip usage, extent, then pixels. */
+static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, int y_move_cur, int width, int height)
 {
 	const uint8_t *table = small_costume_scale_table;
 	int scaled = st->scale_x != 0xFF || st->scale_y != 0xFF;
-	int x = st->actor_x, y = st->actor_y, i, j, step, lines_to_skip = 0, skip_width, draw_flag = 1;
+	int i, j, step, lines_to_skip = 0, draw_flag = 1;
+	int start_x = 128, start_y = 128;
 	int left, right, top, bottom;
 	int bounds_right = SCREEN_WIDTH, bounds_bottom = st->out_h;
+	struct rle r;
+
+	r.src = src;
+	r.x = st->actor_x;
+	r.y = st->actor_y;
 
 	if (scaled) {
 		int scale_x_step = -1;
@@ -193,28 +484,32 @@ static int cel_extent(struct cel_state *st, int x_move_cur, int y_move_cur, int 
 			scale_x_step = 1;
 		}
 		if (st->to_right) {
-			j = (128 - x_move_cur) & 0xFF;
+			start_x = j = (128 - x_move_cur) & 0xFF;
 			for (i = 0; i < x_move_cur; i++)
 				if (table[j++ & 0xFF] < st->scale_x)
-					x -= scale_x_step;
-			left = right = x;
-			j = (128 - x_move_cur) & 0xFF;
+					r.x -= scale_x_step;
+			left = right = r.x;
+			j = start_x;
 			for (i = 0; i < width; i++) {
-				if (right < 0)
+				if (right < 0) {
 					lines_to_skip++;
+					start_x = j;
+				}
 				if (table[j++ & 0xFF] < st->scale_x)
 					right++;
 			}
 		} else {
-			j = (128 + x_move_cur) & 0xFF;
+			start_x = j = (128 + x_move_cur) & 0xFF;
 			for (i = 0; i < x_move_cur; i++)
 				if (table[j-- & 0xFF] < st->scale_x)
-					x += scale_x_step;
-			left = right = x;
-			j = (128 + x_move_cur) & 0xFF;
+					r.x += scale_x_step;
+			left = right = r.x;
+			j = start_x;
 			for (i = 0; i < width; i++) {
-				if (left >= bounds_right)
+				if (left >= bounds_right) {
+					start_x = j;
 					lines_to_skip++;
+				}
 				if (table[j-- & 0xFF] < st->scale_x)
 					left--;
 			}
@@ -227,32 +522,38 @@ static int cel_extent(struct cel_state *st, int x_move_cur, int y_move_cur, int 
 			y_move_cur = -y_move_cur;
 			step = -step;
 		}
-		j = (128 - y_move_cur) & 0xFF;
+		start_y = j = (128 - y_move_cur) & 0xFF;
 		for (i = 0; i < y_move_cur; i++)
 			if (table[j++ & 0xFF] < st->scale_y)
-				y -= step;
-		top = bottom = y;
-		j = (128 - y_move_cur) & 0xFF;
+				r.y -= step;
+		top = bottom = r.y;
+		j = start_y;
 		for (i = 0; i < height; i++)
 			if (table[j++ & 0xFF] < st->scale_y)
 				bottom++;
 	} else {
 		if (!st->to_right)
 			x_move_cur = -x_move_cur;
-		x += x_move_cur;
-		y += y_move_cur;
+		r.x += x_move_cur;
+		r.y += y_move_cur;
 		if (st->to_right) {
-			left = x;
-			right = x + width;
+			left = r.x;
+			right = r.x + width;
 		} else {
-			left = x - width;
-			right = x;
+			left = r.x - width;
+			right = r.x;
 		}
-		top = y;
+		top = r.y;
 		bottom = top + height;
 	}
 
-	skip_width = width;
+	r.scale_x_index = start_x;
+	r.scale_y_index = start_y;
+	r.skip_width = width;
+	r.scale_x_step = st->to_right ? 1 : -1;
+	r.rep_len = 0;
+	r.rep_color = 0;
+
 	mark_rect_as_dirty(left, right + 1, top, bottom, st->actor_id);
 
 	if (top >= bounds_bottom || bottom <= 0)
@@ -262,30 +563,34 @@ static int cel_extent(struct cel_state *st, int x_move_cur, int y_move_cur, int 
 
 	if (st->to_right) {
 		if (!scaled)
-			lines_to_skip = 0 - x;
+			lines_to_skip = 0 - r.x;
 		if (lines_to_skip > 0) {
-			skip_width -= lines_to_skip;
+			r.skip_width -= lines_to_skip;
+			skip_cel_lines(&r, height, st->shr, st->mask, lines_to_skip);
+			r.x = 0;
 		} else {
 			lines_to_skip = right - bounds_right;
 			if (lines_to_skip <= 0)
 				draw_flag = 2;
 			else
-				skip_width -= lines_to_skip;
+				r.skip_width -= lines_to_skip;
 		}
 	} else {
 		if (!scaled)
 			lines_to_skip = right - bounds_right;
 		if (lines_to_skip > 0) {
-			skip_width -= lines_to_skip;
+			r.skip_width -= lines_to_skip;
+			skip_cel_lines(&r, height, st->shr, st->mask, lines_to_skip);
+			r.x = bounds_right - 1;
 		} else {
 			lines_to_skip = (0 - 1) - left;
 			if (lines_to_skip <= 0)
 				draw_flag = 2;
 			else
-				skip_width -= lines_to_skip;
+				r.skip_width -= lines_to_skip;
 		}
 	}
-	if (skip_width <= 0)
+	if (r.skip_width <= 0)
 		return 0;
 
 	if (top < 0)
@@ -300,17 +605,56 @@ static int cel_extent(struct cel_state *st, int x_move_cur, int y_move_cur, int 
 		st->draw_bottom = bottom;
 	if (height + top >= 256)
 		return 2;
+
+	if (st->draw) {
+		if (height <= MAX_CEL_H)
+			rle_decode_runs(st, &r, height);
+		else
+			rle_decode(st, &r, width, height);
+	}
 	return draw_flag;
 }
 
-int costume_draw_extents(struct actor *a)
+static void flush_scratch(struct cel_state *st)
+{
+	int y, s, s0 = st->min_x / 8, s1 = st->max_x / 8;
+
+	if (st->min_x > st->max_x)
+		return;
+	for (y = st->min_y; y <= st->max_y; y++) {
+		uint8_t *wr = scratch_wr + (uint32_t)y * NUM_STRIPS + s0;
+		const uint8_t *c = scratch + (uint32_t)y * SCREEN_WIDTH + (uint32_t)s0 * 8;
+		uint8_t *d = vs_pixels(&vscr[0], s0 * 8, y);
+		for (s = s0; s <= s1; s++, wr++, c += 8, d++)
+			if (*wr) {
+				planar_put8(d, c, *wr);
+				*wr = 0;
+			}
+	}
+}
+
+/* Actor::drawActorCostume: draws the actor into the main screen, records
+ * its strips and vertical extent. Returns the costume renderer's flags. */
+int costume_draw(struct actor *a)
 {
 	const uint8_t *ptr = res_get(RT_COSTUME, a->costume), *base, *frame_offsets, *anim_cmds;
 	struct cel_state st;
-	int limb, result = 0, num_colors, mirror;
+	int limb, result = 0, num_colors, mirror, i;
 
 	if (!ptr)
 		fatal("costume not found", a->costume, 0);
+
+	if (!scratch || scratch_h < vscr[0].h) {
+		plat_free(scratch, (uint32_t)SCREEN_WIDTH * (uint32_t)scratch_h);
+		plat_free(scratch_wr, (uint32_t)SCREEN_WIDTH / 8 * (uint32_t)scratch_h);
+		scratch_h = vscr[0].h;
+		scratch = plat_alloc((uint32_t)SCREEN_WIDTH * (uint32_t)scratch_h, 0);
+		scratch_wr = plat_alloc((uint32_t)SCREEN_WIDTH / 8 * (uint32_t)scratch_h, PLAT_CLEAR);
+		if (!scratch || !scratch_wr)
+			fatal("out of memory for actor scratch", scratch_h, 0);
+		ptr = res_get(RT_COSTUME, a->costume);
+	}
+
 	base = ptr + 2;
 	num_colors = (base[7] & 0x7F) == 0x58 ? 16 : 32;
 	mirror = (base[7] & 0x80) != 0;
@@ -318,7 +662,7 @@ int costume_draw_extents(struct actor *a)
 	anim_cmds = base + rd_le16(base + 8 + num_colors);
 
 	st.actor_id = a->number;
-	st.actor_x = a->pos.x - g.screen_start_strip * 8;
+	st.actor_x = a->pos.x - vscr[0].xstart;
 	st.actor_y = a->pos.y - a->elevation;
 	st.scale_x = a->scalex;
 	st.scale_y = a->scaley;
@@ -327,10 +671,36 @@ int costume_draw_extents(struct actor *a)
 	st.x_move = st.y_move = 0;
 	st.draw_top = 0x7fffffff;
 	st.draw_bottom = 0;
+	st.shr = num_colors == 32 ? 3 : 4;
+	st.mask = num_colors == 32 ? 7 : 15;
+	st.shadow_mode = a->shadow_mode;
+	st.min_x = st.min_y = 0x7fff;
+	st.max_x = st.max_y = -1;
+	st.draw = 1;
+
+	if (a->force_clip)
+		st.zbuf = a->force_clip;
+	else if (get_class(a->number, CLS_NEVER_CLIP))
+		st.zbuf = 0;
+	else {
+		st.zbuf = get_mask_from_box(a->walkbox);
+		if (st.zbuf > num_zbuffer - 1)
+			st.zbuf = num_zbuffer - 1;
+	}
+
+	if (VAR(VAR_CURRENT_LIGHTS) & LIGHTMODE_ACTOR_USE_COLORS) {
+		for (i = 0; i < num_colors; i++) {
+			uint8_t c = a->palette[i];
+			st.palette[i] = c == 255 ? base[8 + i] : c;
+		}
+	} else {
+		memset(st.palette, 8, (size_t)num_colors);
+		st.palette[12] = 0;
+	}
 
 	for (limb = 0; limb < 16; limb++) {
 		const uint8_t *frameptr, *src;
-		int i, code;
+		int code;
 
 		if (a->cost.curpos[limb] == 0xFFFF || (a->cost.stopped & (1 << limb)))
 			continue;
@@ -346,9 +716,11 @@ int costume_draw_extents(struct actor *a)
 			int y_move_cur = st.y_move + (int16_t)rd_le16(src + 6);
 			st.x_move += (int16_t)rd_le16(src + 8);
 			st.y_move -= (int16_t)rd_le16(src + 10);
-			result |= cel_extent(&st, x_move_cur, y_move_cur, width, height);
+			result |= cel_paint(&st, src + 12, x_move_cur, y_move_cur, width, height);
 		}
 	}
+	{ extern void (*prof_hook)(int); if (prof_hook) prof_hook(12); }
+	flush_scratch(&st);
 	a->top = st.draw_top;
 	a->bottom = st.draw_bottom;
 	return result;

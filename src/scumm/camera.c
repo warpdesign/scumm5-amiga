@@ -7,8 +7,8 @@
  * to list here; see the COPYRIGHT file distributed with the ScummVM source.
  */
 #include "scumm.h"
+#include "gfx.h"
 
-#define NUM_STRIPS (SCREEN_WIDTH / 8)
 
 extern uint8_t charset_has_mask;
 
@@ -76,6 +76,7 @@ void camera_moved(void)
 	g.screen_start_strip = (uint8_t)(g.camera.cur.x / 8 - NUM_STRIPS / 2);
 	g.screen_end_strip = (uint8_t)(g.screen_start_strip + NUM_STRIPS - 1);
 	g.screen_top = (int16_t)(g.camera.cur.y - SCREEN_HEIGHT / 2);
+	gfx_set_xstart(g.screen_start_strip * 8);
 }
 
 void move_camera(void)

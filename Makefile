@@ -25,8 +25,8 @@ HOST = build/host
 HEADERS = $(wildcard src/*.h src/scumm/*.h)
 
 COMMON_SRC = util res heap
-SCUMM_SRC = vm ops5 object room boxes actor costume camera verbs text sound input engine trace
-AMIGA_PROGS = roomview restest scummrun
+SCUMM_SRC = vm ops5 object room boxes actor costume camera verbs text sound input engine trace gfx
+AMIGA_PROGS = roomview restest scummrun scumm5
 HOST_PROGS = restest scummrun
 
 AMIGA_COMMON = $(OUT)/start.o $(OUT)/plat_amiga.o $(COMMON_SRC:%=$(OUT)/%.o)
@@ -42,17 +42,21 @@ HOST_SCUMM = $(SCUMM_SRC:%=$(HOST)/scumm/%.o)
 $(OUT) $(HOST) $(OUT)/scumm $(HOST)/scumm:
 	mkdir -p $@
 
+# The interpreter is the hot code: -O2 rather than -Os.
 $(OUT)/scumm/%.o: src/scumm/%.c $(HEADERS) | $(OUT)/scumm
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -O2 -c $< -o $@
 
 $(HOST)/scumm/%.o: src/scumm/%.c $(HEADERS) | $(HOST)/scumm
 	$(HOSTCC) $(HOSTCFLAGS) -c $< -o $@
 
-$(OUT)/scummrun.elf: $(OUT)/scummrun.o $(AMIGA_COMMON) $(AMIGA_SCUMM)
-	$(CC) $(LDFLAGS) $(AMIGA_COMMON) $(AMIGA_SCUMM) $< -lgcc -o $@
+$(OUT)/scummrun.elf: $(OUT)/scummrun.o $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/scumm/display_null.o
+	$(CC) $(LDFLAGS) $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/scumm/display_null.o $< -lgcc -o $@
 
-$(HOST)/scummrun: $(HOST)/scummrun.o $(HOST_COMMON) $(HOST_SCUMM)
-	$(HOSTCC) $(HOSTCFLAGS) $(HOST_COMMON) $(HOST_SCUMM) $< -o $@
+$(OUT)/scumm5.elf: $(OUT)/scumm_main.o $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/vbl.o
+	$(CC) $(LDFLAGS) $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/vbl.o $< -lgcc -o $@
+
+$(HOST)/scummrun: $(HOST)/scummrun.o $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/display_host.o
+	$(HOSTCC) $(HOSTCFLAGS) $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/display_host.o $< -o $@
 
 $(OUT)/%.o: src/%.c $(HEADERS) | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
