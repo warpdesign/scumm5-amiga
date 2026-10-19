@@ -1,0 +1,115 @@
+/* scumm5-amiga - minimal freestanding AmigaOS interface
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Library calls are inlined register-argument jsr's through the base in a6.
+ * Libraries preserve everything but d0/d1/a0/a1; scratch registers used as
+ * inputs are therefore declared in/out, the others clobbered.
+ */
+#ifndef AMIGA_H
+#define AMIGA_H
+
+typedef unsigned char UBYTE;
+typedef unsigned short UWORD;
+typedef unsigned long ULONG;
+typedef signed short WORD;
+typedef signed long LONG;
+typedef void *APTR;
+
+extern APTR SysBase;
+extern APTR DOSBase;
+extern APTR GfxBase;
+
+#define MEMF_CHIP  (1UL << 1)
+#define MEMF_CLEAR (1UL << 16)
+#define MODE_OLDFILE 1005
+
+/* struct GfxBase offsets */
+#define GFX_ACTIVIEW 34
+#define GFX_COPINIT  38
+
+#define CUSTOM ((volatile UWORD *)0xdff000)
+#define REG(off) (CUSTOM[(off) / 2])
+#define CIAA_PRA (*(volatile UBYTE *)0xbfe001)
+
+static inline APTR OpenLibrary(const char *name, ULONG ver)
+{
+	register APTR d0 __asm("d0") = (APTR)ver;
+	register const char *a1 __asm("a1") = name;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -552(%%a6)" : "+r"(d0), "+r"(a1) : "r"(a6) : "d1", "a0", "cc", "memory");
+	return d0;
+}
+
+static inline void CloseLibrary(APTR lib)
+{
+	register APTR a1 __asm("a1") = lib;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -414(%%a6)" : "+r"(a1) : "r"(a6) : "d0", "d1", "a0", "cc", "memory");
+}
+
+static inline APTR AllocMem(ULONG size, ULONG req)
+{
+	register ULONG d0 __asm("d0") = size;
+	register ULONG d1 __asm("d1") = req;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -198(%%a6)" : "+r"(d0), "+r"(d1) : "r"(a6) : "a0", "a1", "cc", "memory");
+	return (APTR)d0;
+}
+
+static inline void FreeMem(APTR mem, ULONG size)
+{
+	register APTR a1 __asm("a1") = mem;
+	register ULONG d0 __asm("d0") = size;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -210(%%a6)" : "+r"(a1), "+r"(d0) : "r"(a6) : "d1", "a0", "cc", "memory");
+}
+
+static inline LONG Open(const char *name, LONG mode)
+{
+	register LONG d1 __asm("d1") = (LONG)name;
+	register LONG d2 __asm("d2") = mode;
+	register LONG d0 __asm("d0");
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -30(%%a6)" : "=r"(d0), "+r"(d1) : "r"(d2), "r"(a6) : "a0", "a1", "cc", "memory");
+	return d0;
+}
+
+static inline void Close(LONG fh)
+{
+	register LONG d1 __asm("d1") = fh;
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -36(%%a6)" : "+r"(d1) : "r"(a6) : "d0", "a0", "a1", "cc", "memory");
+}
+
+static inline LONG Read(LONG fh, APTR buf, LONG len)
+{
+	register LONG d1 __asm("d1") = fh;
+	register APTR d2 __asm("d2") = buf;
+	register LONG d3 __asm("d3") = len;
+	register LONG d0 __asm("d0");
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -42(%%a6)" : "=r"(d0), "+r"(d1) : "r"(d2), "r"(d3), "r"(a6) : "a0", "a1", "cc", "memory");
+	return d0;
+}
+
+static inline void PutStr(const char *s)
+{
+	register const char *d1 __asm("d1") = s;
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -948(%%a6)" : "+r"(d1) : "r"(a6) : "d0", "a0", "a1", "cc", "memory");
+}
+
+static inline void LoadView(APTR view)
+{
+	register APTR a1 __asm("a1") = view;
+	register APTR a6 __asm("a6") = GfxBase;
+	__asm volatile("jsr -222(%%a6)" : "+r"(a1) : "r"(a6) : "d0", "d1", "a0", "cc", "memory");
+}
+
+static inline void WaitTOF(void)
+{
+	register APTR a6 __asm("a6") = GfxBase;
+	__asm volatile("jsr -270(%%a6)" : : "r"(a6) : "d0", "d1", "a0", "a1", "cc", "memory");
+}
+
+#endif
