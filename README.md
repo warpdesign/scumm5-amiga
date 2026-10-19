@@ -124,6 +124,9 @@ override `AROS_BUILD`), Python 3, and Copperline.
     make                              # build/amiga/roomview + room7.pln
     scripts/run-roomview.sh 8         # show demo room 8, LMB exits
     scripts/run-roomview.sh 7 out.png # headless screenshot
+    ROOMVIEW_ARGS="0 100" scripts/run-roomview.sh 7   # hold room column 100
+
+Rooms wider than 320 px scroll back and forth, 1 px per frame.
 
 Programs are freestanding (no libc, own startup and inline OS calls in
 `src/amiga.h`), linked as relocatable ELF and converted to hunk format, so
@@ -144,6 +147,21 @@ pixel-exact against the decoded source. Notes:
   64 px (48 bytes) per plane per line, not 40: modulos must account for it.
 - After `LoadView(NULL)` under AROS, bitplane DMA was off; set it in DMACON.
 - Not yet tested on a real Kickstart 3.1 A1200 ROM (none available here).
+
+Milestone 2 done: hardware horizontal scrolling over the full width of demo
+room 7 (784 px), any pixel position, checked pixel-exact at columns 0, 1, 63,
+64, 100, 464 and on a frame captured mid-scroll. How it works:
+
+- BPLCON1 delays the picture by 0-63 px (AGA PF1H/PF2H bits 2-7); bitplane
+  pointers move in 64 px steps, as 4x fetch needs 8-byte-aligned pointers.
+- DDFSTRT is $18, one 64 px block before $38, so the delayed left edge has
+  fetched data; that makes 7 blocks (56 bytes) per plane per line. Sprite
+  DMA slots are lost, which is fine as sprites are not used.
+- The plane buffer has 8 bytes of padding in front and 16 behind for the
+  extra block fetched at either end.
+- Two copper lists: the CPU patches 17 words (BPLCON1 + 8 plane pointers) in
+  the idle one after each vblank and points COP1LC at it, so a frame is
+  never changed while it is displayed. Per-frame CPU cost is negligible.
 
 ## License and provenance
 
