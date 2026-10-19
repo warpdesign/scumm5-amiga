@@ -1,0 +1,295 @@
+| scumm5-amiga - costume cel decoding and scratch flush for the 68020
+| SPDX-License-Identifier: GPL-3.0-or-later
+|
+| C models: cost_runs and the planar_put8 loop in src/scumm/costume.c.
+| Loops are kept small enough for the 256-byte instruction cache.
+
+	.text
+
+| struct cost_runs offsets
+	.set	R_SRC, 0
+	.set	R_SP, 4
+	.set	R_WP, 8
+	.set	R_ZM, 12
+	.set	R_CM, 16
+	.set	R_TAB, 20
+	.set	R_LEN, 24
+	.set	R_PC, 28
+	.set	R_TRANSP, 32
+	.set	R_HEIGHT, 36
+	.set	R_COLUMNS, 40
+	.set	R_MODE, 44
+	.set	R_MASKBIT, 48
+
+| registers while decoding:
+|  d0 run length left  d1 rows left in column  d2 colour  d3 mask bit
+|  d4 height (bit 31: columns go left)  d5 columns left  d6 count  d7 temp
+|  a0 source  a1 scratch  a2 written bits  a3 z mask  a4 charset mask
+|  a5 run table  a6 height * 40
+
+| next column: rewind the pointers and step one pixel
+.macro	NEXTCOL mode
+	subq.l	#1,%d5
+	beq	cost_done
+	move.w	%d4,%d1
+	suba.l	%a6,%a2
+.if \mode >= 1
+	suba.l	%a6,%a3
+.endif
+.if \mode >= 2
+	suba.l	%a6,%a4
+.endif
+	move.l	%a6,%d7
+	lsl.l	#3,%d7
+	suba.l	%d7,%a1
+	tst.l	%d4
+	bmi	5f
+	addq.l	#1,%a1
+	ror.b	#1,%d3
+	bcc	6f
+	addq.l	#1,%a2
+.if \mode >= 1
+	addq.l	#1,%a3
+.endif
+.if \mode >= 2
+	addq.l	#1,%a4
+.endif
+	bra	6f
+5:	subq.l	#1,%a1
+	rol.b	#1,%d3
+	bcc	6f
+	subq.l	#1,%a2
+.if \mode >= 1
+	subq.l	#1,%a3
+.endif
+.if \mode >= 2
+	subq.l	#1,%a4
+.endif
+6:
+.endm
+
+.macro	DECODE mode
+	tst.w	%d0
+	beq	.Lrun\@
+	tst.l	%d6
+	bne	.Ltr\@
+	bra	.Lop\@
+
+.Lrun\@:
+	moveq	#0,%d7
+	move.b	(%a0)+,%d7
+	move.b	(%a5,%d7.w),%d2
+	moveq	#0,%d0
+	move.b	256(%a5,%d7.w),%d0
+	bclr	#7,%d0
+	bne	.Ltrx\@
+	tst.b	%d0
+	bne	.Lop\@
+	move.b	(%a0)+,%d0
+	beq	.Lrun\@
+
+.Lop\@:
+	move.w	%d0,%d6
+	cmp.w	%d1,%d6
+	bls	1f
+	move.w	%d1,%d6
+1:	sub.w	%d6,%d0
+	sub.w	%d6,%d1
+	subq.w	#1,%d6
+2:
+.if \mode == 0
+	move.b	%d2,(%a1)
+	or.b	%d3,(%a2)
+.else
+	move.b	(%a3),%d7
+.if \mode == 2
+	or.b	(%a4),%d7
+	lea	40(%a4),%a4
+.endif
+	and.b	%d3,%d7
+	bne	4f
+	move.b	%d2,(%a1)
+	or.b	%d3,(%a2)
+4:	lea	40(%a3),%a3
+.endif
+	lea	320(%a1),%a1
+	lea	40(%a2),%a2
+	dbra	%d6,2b
+	tst.w	%d1
+	bne	3f
+	NEXTCOL	\mode
+3:	tst.w	%d0
+	bne	.Lop\@
+	bra	.Lrun\@
+
+.Ltrx\@:
+	tst.b	%d0
+	bne	.Ltr\@
+	move.b	(%a0)+,%d0
+	beq	.Lrun\@
+
+.Ltr\@:
+	move.w	%d0,%d6
+	cmp.w	%d1,%d6
+	bls	1f
+	move.w	%d1,%d6
+1:	sub.w	%d6,%d0
+	sub.w	%d6,%d1
+	moveq	#0,%d7
+	move.w	%d6,%d7
+	lsl.l	#2,%d7
+	add.w	%d6,%d7
+	lsl.l	#3,%d7
+	adda.l	%d7,%a2
+.if \mode >= 1
+	adda.l	%d7,%a3
+.endif
+.if \mode >= 2
+	adda.l	%d7,%a4
+.endif
+	lsl.l	#3,%d7
+	adda.l	%d7,%a1
+	tst.w	%d1
+	bne	3f
+	NEXTCOL	\mode
+3:	tst.w	%d0
+	bne	.Ltr\@
+	bra	.Lrun\@
+.endm
+
+| void cost_runs(const struct cost_runs *a)
+	.globl	cost_runs
+cost_runs:
+	movem.l	%d2-%d7/%a2-%a6,-(%sp)
+	move.l	48(%sp),%a6
+	move.l	R_SRC(%a6),%a0
+	move.l	R_SP(%a6),%a1
+	move.l	R_WP(%a6),%a2
+	move.l	R_ZM(%a6),%a3
+	move.l	R_CM(%a6),%a4
+	move.l	R_TAB(%a6),%a5
+	move.l	R_LEN(%a6),%d0
+	move.l	R_PC(%a6),%d2
+	move.l	R_MASKBIT(%a6),%d3
+	move.l	R_HEIGHT(%a6),%d4
+	move.l	R_COLUMNS(%a6),%d5
+	move.l	R_TRANSP(%a6),%d6
+	move.l	R_MODE(%a6),%d7
+	moveq	#0,%d1
+	move.w	%d4,%d1
+	mulu.w	#40,%d1
+	move.l	%d1,%a6
+	move.w	%d4,%d1
+	ext.l	%d6
+	cmp.l	#1,%d7
+	beq	.Lmode1
+	bhi	.Lmode2
+	DECODE	0
+.Lmode1:
+	DECODE	1
+.Lmode2:
+	DECODE	2
+cost_done:
+	movem.l	(%sp)+,%d2-%d7/%a2-%a6
+	rts
+
+| One 8-pixel group: chunky longs d2 (pixels 0-3), d3 (4-7) to planes,
+| 8x8 bit transpose as c2p8 in gfx.c. Leaves planes 0-3 in d3 and 4-7 in
+| d2, low byte first.
+.macro	C2P
+	move.l	%d2,%d4
+	lsr.l	#7,%d4
+	eor.l	%d2,%d4
+	andi.l	#0x00AA00AA,%d4
+	eor.l	%d4,%d2
+	lsl.l	#7,%d4
+	eor.l	%d4,%d2
+	move.l	%d3,%d4
+	lsr.l	#7,%d4
+	eor.l	%d3,%d4
+	andi.l	#0x00AA00AA,%d4
+	eor.l	%d4,%d3
+	lsl.l	#7,%d4
+	eor.l	%d4,%d3
+	move.l	%d2,%d4
+	lsr.l	%d6,%d4
+	eor.l	%d2,%d4
+	andi.l	#0x0000CCCC,%d4
+	eor.l	%d4,%d2
+	lsl.l	%d6,%d4
+	eor.l	%d4,%d2
+	move.l	%d3,%d4
+	lsr.l	%d6,%d4
+	eor.l	%d3,%d4
+	andi.l	#0x0000CCCC,%d4
+	eor.l	%d4,%d3
+	lsl.l	%d6,%d4
+	eor.l	%d4,%d3
+	move.l	%d3,%d4
+	lsr.l	#4,%d4
+	eor.l	%d2,%d4
+	andi.l	#0x0F0F0F0F,%d4
+	eor.l	%d4,%d2
+	lsl.l	#4,%d4
+	eor.l	%d4,%d3
+.endm
+
+| void cost_flush_row(uint8_t *wr, const uint8_t *c, uint8_t *d, int n)
+| Writes the n 8-pixel groups of chunky row c whose written-bit byte is
+| non-zero into the planes at d (40 bytes apart), clearing those bytes.
+	.globl	cost_flush_row
+cost_flush_row:
+	movem.l	%d2-%d7/%a2-%a3,-(%sp)
+	move.l	36(%sp),%a0
+	move.l	40(%sp),%a1
+	move.l	44(%sp),%a2
+	move.l	48(%sp),%d0
+	subq.l	#1,%d0
+	bmi	.Lfdone
+	moveq	#14,%d6
+.Lfloop:
+	move.b	(%a0),%d1
+	beq	.Lfnext
+	clr.b	(%a0)
+	move.l	(%a1),%d2
+	move.l	4(%a1),%d3
+	C2P
+	movea.l	%a2,%a3
+	cmp.b	#-1,%d1
+	beq	.Lffull
+	moveq	#7,%d7
+1:	move.b	(%a3),%d4
+	eor.b	%d4,%d3
+	and.b	%d1,%d3
+	eor.b	%d3,%d4
+	move.b	%d4,(%a3)
+	lea	40(%a3),%a3
+	lsr.l	#8,%d3
+	cmp.w	#4,%d7
+	bne	2f
+	move.l	%d2,%d3
+2:	dbra	%d7,1b
+	bra	.Lfnext
+.Lffull:
+	move.b	%d3,(%a3)
+	lsr.l	#8,%d3
+	move.b	%d3,40(%a3)
+	lsr.l	#8,%d3
+	move.b	%d3,80(%a3)
+	lsr.l	#8,%d3
+	move.b	%d3,120(%a3)
+	move.b	%d2,160(%a3)
+	lsr.l	#8,%d2
+	move.b	%d2,200(%a3)
+	lsr.l	#8,%d2
+	move.b	%d2,240(%a3)
+	lsr.l	#8,%d2
+	move.b	%d2,280(%a3)
+.Lfnext:
+	addq.l	#1,%a0
+	addq.l	#8,%a1
+	addq.l	#1,%a2
+	dbra	%d0,.Lfloop
+.Lfdone:
+	movem.l	(%sp)+,%d2-%d7/%a2-%a3
+	rts

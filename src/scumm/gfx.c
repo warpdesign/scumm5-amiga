@@ -171,11 +171,36 @@ static void init_virt_screen(int slot, int top, int height, int twobufs, int scr
 	set_dirty_range(vs, 0, height);
 }
 
+/* Verb screen images are redrawn by scripts many times a frame, each time
+ * from a fresh copy of the object image. Opaque strips are unpacked once
+ * into verb_shadow (laid out like the verb screen, written by nothing else)
+ * and then blitted; verb_cache tells which image strip each shadow column
+ * holds, by gfx_image_key (rows y, y + h). */
+uint32_t gfx_image_key;
+static uint8_t *verb_shadow;
+static struct {
+	uint32_t key;
+	int16_t strip, y, h;
+} verb_cache[NUM_STRIPS];
+
+void gfx_verb_cache_clear(void)
+{
+	memset(verb_cache, 0, sizeof(verb_cache));
+}
+
 void gfx_init_screens(int b, int h)
 {
+	gfx_verb_cache_clear();
+	res_free(verb_shadow);
+	verb_shadow = 0;
 	init_virt_screen(0, b, h - b, 1, 1);
 	init_virt_screen(1, 0, b, 0, 0);
 	init_virt_screen(2, h, SCREEN_HEIGHT - h, 0, 0);
+	if (vscr[2].size) {
+		verb_shadow = res_alloc(vscr[2].size);
+		if (!verb_shadow)
+			fatal("out of memory for verb images", (int)vscr[2].size, 0);
+	}
 	display_layout(b, h);
 }
 
@@ -259,176 +284,113 @@ void gfx_room_changed(void)
 		img_buf_offs[i] = (uint32_t)(i < num_zbuffer ? i : num_zbuffer - 1) * mask_itemsize;
 }
 
-/* ---- strip codecs ---- */
+/* ---- planar strips (PSMP, converted offline by mkpack) ---- */
 
-static uint8_t strip_px[8 * 256];
-static uint8_t strip_wr[256];	/* bit per pixel, MSB = leftmost */
-static uint8_t decomp_shr;
+#define MAX_STRIP_H 512
+static uint8_t strip_mask[MAX_STRIP_H];
 
-/* Bit reader state kept in locals: bits (LSB first), cnt valid bits, sp source. */
-#define FILL() do { if (cnt <= 8) { bits |= (uint32_t)*sp++ << cnt; cnt += 8; } } while (0)
-#define SKIP(n) do { bits >>= (n); cnt -= (n); } while (0)
-
-/* One pixel of the BasicH/BasicV codecs: draw, then read the next colour. */
-#define BASIC_STEP(px, wr, bit) do { \
-	FILL(); \
-	if (!transp) { \
-		*(px) = pal[color]; \
-	} else if (color != tc) { \
-		*(px) = pal[color]; \
-		*(wr) |= (bit); \
-	} \
-	if (!(bits & 1)) { \
-		SKIP(1); \
-	} else if (!(bits & 2)) { \
-		SKIP(2); \
-		FILL(); \
-		color = (int)(bits & cmask); \
-		SKIP(shr); \
-		inc = -1; \
-	} else if (!(bits & 4)) { \
-		SKIP(3); \
-		color = (color + inc) & 0xFF; \
-	} else { \
-		SKIP(3); \
-		inc = -inc; \
-		color = (color + inc) & 0xFF; \
-	} \
-} while (0)
-
-static inline __attribute__((always_inline)) void strip_basic(const uint8_t *src, int height, int transp, int vertical)
+/* Unpacks IFF ByteRun1 data into plane columns: n bytes per plane, rows
+ * [0, rows) of each written to dst (plane 0 byte of the first row) through
+ * the mask (0: plain store); the rest of each column is skipped. */
+static void unpack_columns(uint8_t *dst, const uint8_t *src, int planes, int n, int rows,
+			   const uint8_t *mask)
 {
-	const uint8_t *sp = src + 2, *pal = g.room_palette;
-	uint32_t bits = src[1], cmask = (1u << decomp_shr) - 1;
-	int cnt = 8, shr = decomp_shr, tc = transparent_color;
-	int color = src[0], inc = -1, x, y;
+	int p = 0, y = 0, cnt, lit, fast = !mask && rows == n;
+	uint8_t *d = dst, v = 0;
 
-	if (vertical) {
-		for (x = 0; x < 8; x++) {
-			uint8_t *px = strip_px + x, *wr = strip_wr, bit = (uint8_t)(0x80 >> x);
-			for (y = 0; y < height; y++, px += 8, wr++)
-				BASIC_STEP(px, wr, bit);
+	while (p < planes) {
+		int c = (int8_t)*src++;
+		if (c == -128)
+			continue;
+		if (c >= 0) {
+			cnt = c + 1;
+			lit = 1;
+		} else {
+			cnt = 1 - c;
+			lit = 0;
+			v = *src++;
 		}
-	} else {
-		uint8_t *px = strip_px, *wr = strip_wr;
-		for (y = 0; y < height; y++, wr++)
-			for (x = 0; x < 8; x++, px++)
-				BASIC_STEP(px, wr, (uint8_t)(0x80 >> x));
-	}
-}
-
-static inline __attribute__((always_inline)) void strip_complex(const uint8_t *src, int height, int transp)
-{
-	const uint8_t *sp = src + 3, *pal = g.room_palette;
-	uint32_t bits = (uint32_t)src[1] | (uint32_t)src[2] << 8, cmask = (1u << decomp_shr) - 1;
-	int cnt = 16, shr = decomp_shr, tc = transparent_color;
-	int color = src[0], repeat = 0, x, y;
-	uint8_t *px = strip_px, *wr = strip_wr;
-
-	for (y = 0; y < height; y++, wr++)
-		for (x = 0; x < 8; x++, px++) {
-			if (!transp) {
-				*px = pal[color];
-			} else if (color != tc) {
-				*px = pal[color];
-				*wr |= (uint8_t)(0x80 >> x);
-			}
-			if (repeat) {
-				repeat--;
-				continue;
-			}
-			FILL();
-			if (!(bits & 1)) {
-				SKIP(1);
-			} else if (bits & 2) {
-				int diff;
-				SKIP(2);
-				FILL();
-				diff = (int)(bits & 7) - 4;
-				SKIP(3);
-				if (diff) {
-					color = (color + diff) & 0xFF;
+		while (cnt) {
+			int k = n - y;
+			if (k > cnt)
+				k = cnt;
+			cnt -= k;
+			if (fast) {
+				y += k;
+				if (lit) {
+					while (k--) {
+						*d = *src++;
+						d += VS_PITCH;
+					}
 				} else {
-					FILL();
-					repeat = ((int)(bits & 0xFF) - 1) & 0xFF;
-					SKIP(8);
+					while (k--) {
+						*d = v;
+						d += VS_PITCH;
+					}
 				}
 			} else {
-				SKIP(2);
-				FILL();
-				color = (int)(bits & cmask);
-				SKIP(shr);
+				while (k--) {
+					uint8_t b = lit ? *src++ : v;
+					if (y < rows) {
+						if (!mask)
+							*d = b;
+						else if (mask[y])
+							*d = (uint8_t)((*d & ~mask[y]) | (b & mask[y]));
+					}
+					d += VS_PITCH;
+					y++;
+				}
+			}
+			if (y == n) {
+				y = 0;
+				d = dst + ++p * VS_PLANE;
 			}
 		}
-}
-
-static inline __attribute__((always_inline)) void strip_raw(const uint8_t *src, int height, int transp)
-{
-	const uint8_t *pal = g.room_palette;
-	uint8_t *px = strip_px, *wr = strip_wr;
-	int x, y;
-
-	for (y = 0; y < height; y++, wr++)
-		for (x = 0; x < 8; x++, px++) {
-			int c = *src++;
-			if (!transp) {
-				*px = pal[c];
-			} else if (c != transparent_color) {
-				*px = pal[c];
-				*wr |= (uint8_t)(0x80 >> x);
-			}
-		}
-}
-
-/* Decodes one strip into strip_px/strip_wr; returns whether it is transparent. */
-static int decompress_bitmap(const uint8_t *src, int height)
-{
-	int code = *src++, transp = 0;
-	/* opaque codecs write every pixel, so their write map starts full */
-	int partial = (code >= 34 && code <= 48) || (code >= 84 && code <= 88) ||
-		      (code >= 124 && code <= 128) || code == 150;
-
-	memset(strip_wr, partial ? 0 : 0xFF, (size_t)height);
-	decomp_shr = (uint8_t)(code % 10);
-
-	if (code == 1) {
-		strip_raw(src, height, 0);
-	} else if (code >= 14 && code <= 18) {
-		strip_basic(src, height, 0, 1);
-	} else if (code >= 24 && code <= 28) {
-		strip_basic(src, height, 0, 0);
-	} else if (code >= 34 && code <= 38) {
-		transp = 1;
-		strip_basic(src, height, 1, 1);
-	} else if (code >= 44 && code <= 48) {
-		transp = 1;
-		strip_basic(src, height, 1, 0);
-	} else if ((code >= 64 && code <= 68) || (code >= 104 && code <= 108)) {
-		strip_complex(src, height, 0);
-	} else if ((code >= 84 && code <= 88) || (code >= 124 && code <= 128)) {
-		transp = 1;
-		strip_complex(src, height, 1);
-	} else if (code == 150) {
-		strip_raw(src, height, 1);
-	} else {
-		fatal("unsupported strip codec", code, 0);
 	}
-	return transp;
 }
 
-static void put_strip(uint8_t *dst, int height)
+/* IFF ByteRun1 into a plain buffer */
+static const uint8_t *unpackbits(uint8_t *dst, const uint8_t *src, uint32_t n)
 {
-	int y;
-	for (y = 0; y < height; y++, dst += VS_PITCH)
-		planar_put8(dst, strip_px + y * 8, strip_wr[y]);
+	uint8_t *end = dst + n;
+
+	while (dst < end) {
+		int c = (int8_t)*src++;
+		if (c >= 0) {
+			do
+				*dst++ = *src++;
+			while (c--);
+		} else if (c != -128) {
+			uint8_t v = *src++;
+			c = 1 - c;
+			do
+				*dst++ = v;
+			while (--c);
+		}
+	}
+	return src;
 }
 
-static void copy8col(uint8_t *dst, const uint8_t *src, int height)
+/* Puts rows [0, height) of one PSMP strip at dst (plane 0 byte of the first
+ * row). Returns flags bit 0, the codec's transparency. */
+static int put_planar_strip(uint8_t *dst, const uint8_t *strip, int stored_h, int height)
 {
-	int y, p;
-	for (y = 0; y < height; y++, dst += VS_PITCH, src += VS_PITCH)
-		for (p = 0; p < 8; p++)
-			dst[p * VS_PLANE] = src[p * VS_PLANE];
+	int flags = strip[0];
+	const uint8_t *src = strip + 1;
+
+	if (flags & 4)
+		return flags & 1;
+	if (stored_h > MAX_STRIP_H)
+		fatal("strip too tall", stored_h, 0);
+	if (height > stored_h)
+		height = stored_h;
+	if (flags & 2) {
+		src = unpackbits(strip_mask, src, (uint32_t)stored_h);
+		unpack_columns(dst, src, 8, stored_h, height, strip_mask);
+	} else {
+		unpack_columns(dst, src, 8, stored_h, height, 0);
+	}
+	return flags & 1;
 }
 
 static void clear8col(uint8_t *dst, int height)
@@ -474,14 +436,14 @@ static void decompress_mask_img(uint8_t *dst, const uint8_t *src, int height, in
 #define DB_OBJECT_MODE 2
 
 /* Gdi::drawBitmap for the main or verb screen. ptr is the image block that
- * holds SMAP and ZPnn (IM00 of RMIM, or IMnn of an object). */
+ * holds PSMP and ZPnn (IM00 of RMIM, or IMnn of an object). */
 void gfx_draw_bitmap(const uint8_t *ptr, int vsn, int x, int y, int width, int height,
 		     int stripnr, int numstrip, int flag)
 {
 	struct vscreen *vs = &vscr[vsn];
-	const uint8_t *smap = res_find(TAG('S', 'M', 'A', 'P'), ptr);
+	const uint8_t *smap = res_find(TAG('P', 'S', 'M', 'P'), ptr);
 	const uint8_t *zplane[8];
-	uint32_t smap_len;
+	int nstrips, stored_h;
 	int i, k, sx, limit, lights = is_light_on();
 
 	static const uint32_t zp_tags[5] = {
@@ -491,8 +453,9 @@ void gfx_draw_bitmap(const uint8_t *ptr, int vsn, int x, int y, int width, int h
 
 	(void)width;
 	if (!smap)
-		fatal("image without SMAP", g.room_resource, 0);
-	smap_len = rd_be32(smap + 4);
+		fatal("image without PSMP", g.room_resource, 0);
+	nstrips = rd_be16(smap + 8);
+	stored_h = rd_be16(smap + 10);
 	for (i = 1; i < num_zbuffer && i < 5; i++)
 		zplane[i] = gfx_zbuffer_disabled ? 0 : res_find(zp_tags[i], ptr);
 
@@ -524,18 +487,33 @@ void gfx_draw_bitmap(const uint8_t *ptr, int vsn, int x, int y, int width, int h
 
 		dst = (vs->back ? vs->back : vs->pixels) + (uint32_t)y * VS_PITCH + x;
 
-		if ((uint32_t)stripnr * 4 + 8 >= smap_len)
-			fatal("screen strip out of range", stripnr, (int)smap_len);
-		offset = rd_le32(smap + 8 + stripnr * 4);
-		transp = decompress_bitmap(smap + offset, height);
-		put_strip(dst, height);
+		if (stripnr >= nstrips)
+			fatal("screen strip out of range", stripnr, nstrips);
+		offset = rd_be32(smap + 12 + stripnr * 4);
+		if (vsn == 2 && gfx_image_key && verb_shadow && !(smap[offset] & 6)) {
+			uint32_t row = (uint32_t)y * VS_PITCH;
+			if (verb_cache[sx].key != gfx_image_key || verb_cache[sx].strip != stripnr ||
+			    verb_cache[sx].y != y || verb_cache[sx].h != height) {
+				put_planar_strip(verb_shadow + row + x, smap + offset, stored_h, height);
+				verb_cache[sx].key = gfx_image_key;
+				verb_cache[sx].strip = (int16_t)stripnr;
+				verb_cache[sx].y = (int16_t)y;
+				verb_cache[sx].h = (int16_t)height;
+			}
+			display_copy_planes(vs->pixels + row, verb_shadow + row, x, x + 1, height);
+			transp = smap[offset] & 1;
+		} else {
+			transp = put_planar_strip(dst, smap + offset, stored_h, height);
+		}
 
 		if (vs->back) {
-			uint8_t *front = vs->pixels + (uint32_t)y * VS_PITCH + x;
-			if (lights)
-				copy8col(front, dst, height);
-			else
-				clear8col(front, height);
+			if (lights) {
+				display_copy_planes(vs->pixels + (uint32_t)y * VS_PITCH, vs->back + (uint32_t)y * VS_PITCH,
+						    x, x + 1, height);
+			} else {
+				display_sync();
+				clear8col(vs->pixels + (uint32_t)y * VS_PITCH + x, height);
+			}
 		}
 
 		/* decodeMask */
@@ -556,6 +534,7 @@ void gfx_draw_bitmap(const uint8_t *ptr, int vsn, int x, int y, int width, int h
 			}
 		}
 	}
+	display_sync();
 }
 
 /* ---- background and objects ---- */
@@ -767,20 +746,17 @@ void gfx_copy_planes_cpu(uint8_t *dst, const uint8_t *src, int b0, int b1, int n
 
 /* Byte-wise rectangle operations over the planes, with edge masks: lm on
  * the first byte, rm on the last, whole bytes between. */
-static void fill_rect(struct vscreen *vs, int x, int y, int w, int h, int color)
+void gfx_fill_planes_cpu(uint8_t *row0, int x0, int x1, int rows, int color)
 {
-	int s0 = (vs->xstart + x) >> 3, n = ((vs->xstart + x + w - 1) >> 3) - s0, r, p, k;
-	uint8_t lm = (uint8_t)(0xFF >> ((vs->xstart + x) & 7));
-	uint8_t rm = (uint8_t)(0xFF << (7 - ((vs->xstart + x + w - 1) & 7)));
+	int s0 = x0 >> 3, n = ((x1 - 1) >> 3) - s0, r, p, k;
+	uint8_t lm = (uint8_t)(0xFF >> (x0 & 7)), rm = (uint8_t)(0xFF << (7 - ((x1 - 1) & 7)));
 
-	if (w <= 0 || h <= 0)
-		return;
 	if (!n)
 		lm &= rm;
 	for (p = 0; p < 8; p++) {
-		uint8_t *row = vs->pixels + (uint32_t)y * VS_PITCH + p * VS_PLANE + s0;
+		uint8_t *row = row0 + p * VS_PLANE + s0;
 		int set = (color >> p) & 1;
-		for (r = 0; r < h; r++, row += VS_PITCH) {
+		for (r = 0; r < rows; r++, row += VS_PITCH) {
 			uint8_t *d = row;
 			*d = (uint8_t)(set ? (*d | lm) : (*d & ~lm));
 			if (!n)
@@ -790,6 +766,14 @@ static void fill_rect(struct vscreen *vs, int x, int y, int w, int h, int color)
 			*d = (uint8_t)(set ? (*d | rm) : (*d & ~rm));
 		}
 	}
+}
+
+static void fill_rect(struct vscreen *vs, int x, int y, int w, int h, int color)
+{
+	if (w <= 0 || h <= 0)
+		return;
+	display_fill_planes(vs->pixels + (uint32_t)y * VS_PITCH, vs->xstart + x, vs->xstart + x + w, h, color);
+	display_sync();
 }
 
 static void copy_rect_from_back(struct vscreen *vs, int x, int y, int w, int h)

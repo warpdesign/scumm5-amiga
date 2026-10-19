@@ -338,6 +338,39 @@ void display_copy_planes(uint8_t *dst, const uint8_t *src, int b0, int b1, int n
 	}
 }
 
+/* One blit per plane: D = A ? B : C, A the edge masks, B the colour bit. */
+void display_fill_planes(uint8_t *row0, int x0, int x1, int n, int color)
+{
+	ULONG a0 = (ULONG)row0 + (ULONG)(x0 >> 3), a1 = (ULONG)row0 + (ULONG)((x1 - 1) >> 3);
+	ULONG w0 = a0 & ~1UL, w1 = a1 & ~1UL;
+	int words = (int)(w1 - w0) / 2 + 1, p;
+	int b0 = (int)((a0 - w0) * 8) + (x0 & 7), b1 = (int)((a1 - w1) * 8) + ((x1 - 1) & 7);
+	UWORD fwm = (UWORD)(0xffff >> b0), lwm = (UWORD)(0xffff << (15 - b1));
+
+	if (n <= 0 || x1 <= x0)
+		return;
+	if (n > 1023) {
+		display_sync();
+		gfx_fill_planes_cpu(row0, x0, x1, n, color);
+		return;
+	}
+	for (p = 0; p < 8; p++) {
+		uint8_t *dp = (uint8_t *)w0 + p * VS_PLANE;
+		wait_blit();
+		REG(0x040) = 0x03ca;
+		REG(0x042) = 0;
+		REG(0x044) = fwm;
+		REG(0x046) = lwm;
+		REG(0x074) = 0xffff;
+		REG(0x072) = (color >> p) & 1 ? 0xffff : 0;
+		REG(0x060) = (UWORD)(VS_PITCH - words * 2);
+		REG(0x066) = (UWORD)(VS_PITCH - words * 2);
+		set_ptr(0x048, dp);
+		set_ptr(0x054, dp);
+		REG(0x058) = (UWORD)((n & 1023) << 6 | words);
+	}
+}
+
 void display_sync(void)
 {
 	wait_blit();

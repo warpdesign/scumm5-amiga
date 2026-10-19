@@ -36,7 +36,7 @@ PACK = $(OUT)/$(shell echo $(GAME) | tr A-Z a-z).s5p
 
 all: $(AMIGA_PROGS:%=$(OUT)/%) $(HOST_PROGS:%=$(HOST)/%) $(PACK)
 
-AMIGA_SCUMM = $(SCUMM_SRC:%=$(OUT)/scumm/%.o)
+AMIGA_SCUMM = $(SCUMM_SRC:%=$(OUT)/scumm/%.o) $(OUT)/costume68k.o
 HOST_SCUMM = $(SCUMM_SRC:%=$(HOST)/scumm/%.o)
 
 $(OUT) $(HOST) $(OUT)/scumm $(HOST)/scumm:

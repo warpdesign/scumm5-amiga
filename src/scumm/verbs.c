@@ -57,8 +57,10 @@ static void draw_verb_bitmap(int verb)
 	ydiff = vs->cur_rect.top - vscr[v].topline;
 	if (imptr) {
 		gfx_zbuffer_disabled = 1;
+		gfx_image_key = vs->image_key;
 		for (i = 0; i < imgw; i++)
 			gfx_draw_bitmap(imptr, v, xstrip + i, ydiff, imgw * 8, imgh * 8, i, 1, 3);
+		gfx_image_key = 0;
 		gfx_zbuffer_disabled = 0;
 	}
 	vs->cur_rect.right = (int16_t)(vs->cur_rect.left + rd_le16(imhd + 8 + 12) / 8 * 8);
@@ -221,6 +223,7 @@ void set_verb_object(int room, int object, int verb)
 		size = rd_be32(p + 4);
 		res_free(g.verbs[verb].name);
 		g.verbs[verb].name = res_alloc(size);
+		g.verbs[verb].image_key = (uint32_t)room << 16 | (uint32_t)object;
 		if (!g.verbs[verb].name)
 			fatal("out of memory for verb image", verb, (int)size);
 		roomptr = res_get(RT_ROOM, (uint16_t)room);

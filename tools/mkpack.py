@@ -26,7 +26,7 @@
 
 Pack layout, all big-endian, blobs 4-byte aligned:
   0   char[4] 'S5PK'
-  4   u16     version (2)
+  4   u16     version (3: images as PSMP)
   6   u16     number of resource types (5)
   8   5 x {u16 count, u16 0, u32 directory offset}
       types: 0 room, 1 script, 2 costume, 3 sound, 4 charset
@@ -52,7 +52,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from room2planar import blocks, decode_room, load, rooms  # noqa: E402
+from room2planar import blocks, child, decode_room, decode_strip, load, rooms  # noqa: E402
 
 TYPES = ('DROO', 'DSCR', 'DCOS', 'DSOU', 'DCHR')
 TAGS = (b'ROOM', b'SCRP', b'COST', b'SOUN', b'CHAR')
@@ -139,6 +139,168 @@ def to_planar(width, height, pixels, table):
     return pw, bytes(out)
 
 
+# ---- planar strip images (PSMP) ----
+#
+# Every SMAP (DOS strip codecs) inside a room becomes a PSMP block at the
+# same place, so the engine finds images the same way but only unpacks
+# bitplanes:
+#   'PSMP' u32 size, u16 strips, u16 height, u32 offset[strips] (from the
+#   block start), then per strip: u8 flags and PackBits (IFF ByteRun1) streams.
+#   flags bit 0: the codec was a transparent one (Gdi's return value, which
+#   selects OR-ing of z-plane masks); bit 1: a separate stream comes first, a mask
+#   column (height bytes, MSB = leftmost, bit set = pixel drawn); bit 2:
+#   nothing is drawn (no stream follows).
+#   The last stream holds plane 0..7 columns, height bytes each.
+# Each ROOM also gets an 'S5OF' block: u16 n, then n x {u32 new offset,
+# u32 original offset} of its top-level children, for script-offset traces.
+
+TRANSPARENT_CODECS = set(range(34, 39)) | set(range(44, 49)) | set(range(84, 89)) | set(range(124, 129))
+VERTICAL_CODECS = set(range(14, 19)) | set(range(34, 39))
+
+
+def packbits(b):
+    out = bytearray()
+    i, n = 0, len(b)
+    while i < n:
+        j = i
+        while j + 1 < n and b[j + 1] == b[i] and j - i < 127:
+            j += 1
+        if j > i:
+            out += bytes([(257 - (j - i + 1)) & 0xFF, b[i]])
+            i = j + 1
+            continue
+        j = i
+        while j < n and j - i < 128 and not (j + 2 < n and b[j] == b[j + 1] == b[j + 2]):
+            j += 1
+        out += bytes([j - i - 1]) + b[i:j]
+        i = j
+    return bytes(out)
+
+
+def planar_strip(data, pos, height, trns):
+    """One SMAP strip as (flags, PackBits stream)."""
+    code = data[pos]
+    if code == 150:
+        px = list(data[pos + 1:pos + 1 + 8 * height])
+    else:
+        px = decode_strip(data, pos, height)
+    partial = code in TRANSPARENT_CODECS or code == 150
+    flags = (1 if code in TRANSPARENT_CODECS else 0) | (2 if partial else 0)
+    mask = bytearray(height)
+    cols = bytearray(8 * height)
+    for y in range(height):
+        for x in range(8):
+            v = px[y * 8 + x]
+            if partial and v == trns:
+                continue
+            mask[y] |= 0x80 >> x
+            for p in range(8):
+                if v >> p & 1:
+                    cols[p * height + y] |= 0x80 >> x
+    if partial and all(m == 0 for m in mask):
+        return flags | 4, b'', code
+    if partial and all(m == 0xFF for m in mask):
+        flags &= ~2
+        partial = False
+    packed = (packbits(bytes(mask)) if partial else b'') + packbits(bytes(cols))
+    return flags, packed, code
+
+
+def convert_smap(data, smap, height, trns, stats):
+    first = struct.unpack_from('<I', data, smap + 8)[0]
+    n = (first - 8) // 4
+    hdr = 8 + 4 + 4 * n
+    body = bytearray()
+    offs = []
+    codes = set()
+    for k in range(n):
+        o = struct.unpack_from('<I', data, smap + 8 + 4 * k)[0]
+        flags, packed, code = planar_strip(data, smap + o, height, trns)
+        codes.add(code)
+        offs.append(hdr + len(body))
+        body += bytes([flags]) + packed
+    out = b'PSMP' + struct.pack('>IHH', hdr + len(body), n, height) + b''.join(struct.pack('>I', o) for o in offs) + body
+    stats['smap'] += struct.unpack_from('>I', data, smap + 4)[0]
+    stats['psmp'] += len(out)
+    return out, codes
+
+
+def rebuild(data, start, size, fn):
+    """Block at start with every child replaced by fn(tag, pos, size) (None: keep)."""
+    body = bytearray()
+    for tag, p, s in blocks(data, start + 8, start + size):
+        new = fn(tag, p, s)
+        body += data[p:p + s] if new is None else new
+    return data[start:start + 4] + struct.pack('>I', 8 + len(body)) + bytes(body)
+
+
+def convert_room(data, off, stats):
+    size = struct.unpack_from('>I', data, off + 4)[0]
+    rmhd, _ = child(data, off, size, 'RMHD')
+    room_h = struct.unpack_from('<H', data, rmhd + 10)[0]
+    try:
+        t, _ = child(data, off, size, 'TRNS')
+        trns = data[t + 8]
+    except KeyError:
+        trns = 255
+    cd_height = {}
+    for tag, p, s in blocks(data, off + 8, off + size):
+        if tag == 'OBCD':
+            cdhd, _ = child(data, p, s, 'CDHD')
+            cd_height[struct.unpack_from('<H', data, cdhd + 8)[0]] = data[cdhd + 8 + 5] * 8
+
+    def image(height):
+        def fn(tag, p, s):
+            if tag != 'SMAP':
+                return None
+            out, codes = convert_smap(data, p, height, trns, stats)
+            return out
+        return fn
+
+    def obim(p, s):
+        imhd, _ = child(data, p, s, 'IMHD')
+        oid = struct.unpack_from('<H', data, imhd + 8)[0]
+        ih = struct.unpack_from('<H', data, imhd + 8 + 14)[0] // 8 * 8
+        ch = cd_height.get(oid, ih)
+        height = max(ih, ch)
+
+        def fn(tag, p2, s2):
+            if not (tag.startswith('IM') and tag != 'IMHD'):
+                return None
+            new = rebuild(data, p2, s2, image(height))
+            if ih != ch:
+                for t3, p3, s3 in blocks(data, p2 + 8, p2 + s2):
+                    if t3 == 'SMAP':
+                        first = struct.unpack_from('<I', data, p3 + 8)[0]
+                        for k in range((first - 8) // 4):
+                            o = struct.unpack_from('<I', data, p3 + 8 + 4 * k)[0]
+                            if data[p3 + o] in VERTICAL_CODECS:
+                                stats['mismatch'] += 1
+            return new
+        return rebuild(data, p, s, fn)
+
+    def top(tag, p, s):
+        if tag == 'RMIM':
+            return rebuild(data, p, s, lambda t2, p2, s2:
+                           rebuild(data, p2, s2, image(room_h)) if t2 == 'IM00' else None)
+        if tag == 'OBIM':
+            return obim(p, s)
+        return None
+
+    # Top-level children with their new and original offsets, so tools can
+    # report script offsets as in the DOS data ('S5OF' block, appended).
+    body = bytearray()
+    remap = []
+    for tag, p, s in blocks(data, off + 8, off + size):
+        new = top(tag, p, s)
+        remap.append((8 + len(body), p - off))
+        body += data[p:p + s] if new is None else new
+    s5of = struct.pack('>H', len(remap)) + b''.join(struct.pack('>II', a, b) for a, b in remap)
+    s5of = b'S5OF' + struct.pack('>I', 8 + len(s5of)) + s5of
+    body += s5of
+    return data[off:off + 4] + struct.pack('>I', 8 + len(body)) + bytes(body)
+
+
 class Writer:
     def __init__(self):
         self.buf = bytearray(HEADER_SIZE)
@@ -165,6 +327,7 @@ def build(index_path, data_paths, verbose):
     dirs, totals = [], [0] * (len(TYPES) + 1)
     bg_dir = bytearray()
     nroom = len(lists['DROO'])
+    stats = {'smap': 0, 'psmp': 0, 'mismatch': 0}
 
     for t, tag in enumerate(TYPES):
         entries = bytearray()
@@ -182,7 +345,7 @@ def build(index_path, data_paths, verbose):
             if data[off:off + 4] != TAGS[t]:
                 raise ValueError('%s %d: expected %s at %d, found %r' % (NAMES[t], i, TAGS[t], off, data[off:off + 4]))
             if t == 0:
-                res = data[off:off + struct.unpack_from('>I', data, off + 4)[0]]
+                res = convert_room(data, off, stats)
                 rmim = (0, 0)
                 width, height, _, pixels = decode_room(data, off)
                 pw, planes = to_planar(width, height, pixels, table)
@@ -204,12 +367,15 @@ def build(index_path, data_paths, verbose):
 
     bg_off = w.blob(bytes(bg_dir))
     idx_off = w.blob(index_blob)
-    hdr = b'S5PK' + struct.pack('>HH', 2, len(TYPES))
+    hdr = b'S5PK' + struct.pack('>HH', 3, len(TYPES))
     for count, off in dirs:
         hdr += struct.pack('>HHI', count, 0, off)
     hdr += struct.pack('>III', bg_off, idx_off, len(index_blob))
     assert len(hdr) == HEADER_SIZE and nroom == dirs[0][0]
     w.buf[0:HEADER_SIZE] = hdr
+    if verbose or stats['mismatch']:
+        print('images: %d bytes of SMAP became %d bytes of PSMP; %d vertical-codec strips drawn at two heights'
+              % (stats['smap'], stats['psmp'], stats['mismatch']))
     return bytes(w.buf), totals
 
 

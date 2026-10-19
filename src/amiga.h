@@ -20,6 +20,7 @@ extern APTR DOSBase;
 extern APTR GfxBase;
 
 #define MEMF_CHIP  (1UL << 1)
+#define MEMF_LARGEST (1UL << 17)
 #define MEMF_CLEAR (1UL << 16)
 #define MODE_OLDFILE 1005
 #define OFFSET_BEGINNING (-1)
@@ -48,6 +49,15 @@ struct Interrupt {
 #define CUSTOM ((volatile UWORD *)0xdff000)
 #define REG(off) (CUSTOM[(off) / 2])
 #define CIAA_PRA (*(volatile UBYTE *)0xbfe001)
+
+static inline ULONG AvailMem(ULONG req)
+{
+	register ULONG d1 __asm("d1") = req;
+	register ULONG d0 __asm("d0");
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -216(%%a6)" : "=r"(d0), "+r"(d1) : "r"(a6) : "a0", "a1", "cc", "memory");
+	return d0;
+}
 
 static inline APTR OpenLibrary(const char *name, ULONG ver)
 {

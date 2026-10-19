@@ -74,3 +74,8 @@ void display_copy_planes(uint8_t *dst, const uint8_t *src, int b0, int b1, int n
 void display_sync(void)
 {
 }
+
+void display_fill_planes(uint8_t *row0, int x0, int x1, int n, int color)
+{
+	gfx_fill_planes_cpu(row0, x0, x1, n, color);
+}

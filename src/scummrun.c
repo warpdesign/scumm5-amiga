@@ -3,10 +3,12 @@
  *
  * Usage: scummrun PACK [FRAMES] [-t TRACE] [-r DEMO.REC] [-a ARENA_KB]
  *                 [-d DIR -f FIRST -e EVERY]   (host: dump frames as PPM)
+ *                 [-c EVERY]   (print a main screen checksum every EVERY frames)
  * Boots the game and runs FRAMES main-loop iterations (default 2000)
  * without display or sound, optionally writing a ScummVM-format trace.
  */
 #include "scumm/scumm.h"
+#include "scumm/gfx.h"
 #include "util.h"
 
 #ifndef AMIGA
@@ -16,7 +18,7 @@ void display_host_dump(const char *dir, uint32_t first, uint32_t every);
 int app_main(int argc, char **argv)
 {
 	const char *p, *pack = 0, *trace = 0, *rec = 0, *dump = 0;
-	uint32_t dump_first = 1, dump_every = 1;
+	uint32_t dump_first = 1, dump_every = 1, sum_every = 0, sum = 0;
 	uint32_t frames = 2000, arena = 400, i, t0, jiffies = 0;
 	int n;
 
@@ -36,6 +38,8 @@ int app_main(int argc, char **argv)
 				dump_first = parse_uint(&p);
 			else if (opt == 'e')
 				dump_every = parse_uint(&p);
+			else if (opt == 'c')
+				sum_every = parse_uint(&p);
 		} else if (!pack) {
 			pack = argv[n];
 		} else {
@@ -70,6 +74,19 @@ int app_main(int argc, char **argv)
 	for (i = 0; i < frames && !g.quit; i++) {
 		jiffies += VAR(VAR_TIMER_NEXT) < 1 ? 1 : VAR(VAR_TIMER_NEXT);
 		engine_frame();
+		if (sum_every) {
+			const uint8_t *px = vs_pixels(&vscr[0], 0, 0);
+			uint32_t k, len = (uint32_t)vscr[0].h * VS_PITCH;
+			for (k = 0; k < len; k++)
+				sum = (sum << 5 | sum >> 27) ^ px[k];
+			if ((i + 1) % sum_every == 0) {
+				out_str("sum ");
+				out_num(i + 1);
+				out_str(" ");
+				out_num(sum);
+				report("");
+			}
+		}
 	}
 	t0 = plat_ticks() - t0;
 

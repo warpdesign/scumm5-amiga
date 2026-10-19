@@ -37,10 +37,12 @@ static void prof(int phase)
 	prof_last = now;
 }
 
+#define ARENA_RESERVE_KB 600
+
 int app_main(int argc, char **argv)
 {
 	const char *p, *pack = 0, *rec = 0;
-	uint32_t arena = 400, next, frames = 0, late = 0, max_frames = 0, busy = 0, t0, start = 0, ideal = 0, slow = 0, slow_j = 0, worst = 0, worst_frame = 0, d;
+	uint32_t arena = 0, next, frames = 0, late = 0, max_frames = 0, busy = 0, t0, start = 0, ideal = 0, slow = 0, slow_j = 0, over = 0, chip_free = 0, worst = 0, worst_frame = 0, d;
 	int n, rc = 20;
 
 	for (n = 1; n < argc; n++) {
@@ -62,6 +64,14 @@ int app_main(int argc, char **argv)
 		return 20;
 	}
 
+	if (!arena) {
+		/* leave room for the display, actor scratch and sound samples */
+		uint32_t largest = AvailMem(MEMF_CHIP | MEMF_LARGEST) / 1024;
+		arena = largest > ARENA_RESERVE_KB + 400 ? largest - ARENA_RESERVE_KB : 400;
+	}
+	out_str("scumm: cache ");
+	out_num(arena);
+	report(" KB");
 	GfxBase = OpenLibrary("graphics.library", 39);
 	if (!GfxBase) {
 		report("scumm: graphics.library V39 (AGA) required");
@@ -78,6 +88,7 @@ int app_main(int argc, char **argv)
 		goto out;
 	}
 
+	chip_free = AvailMem(MEMF_CHIP) / 1024;
 	prof_hook = prof;
 	res_clock = display_lines;
 	engine_boot();
@@ -98,6 +109,8 @@ int app_main(int argc, char **argv)
 		engine_frame();
 		d = display_jiffies() - t0;
 		busy += d;
+		if (d > (uint32_t)delta)
+			over++;
 		if (d > 2 * (uint32_t)delta) {
 			slow++;
 			slow_j += d;
@@ -125,6 +138,13 @@ out:
 	out_str(" jiffies, ideal ");
 	out_num(ideal);
 	report("");
+	out_str("  frames over budget: ");
+	out_num(over);
+	out_str(", chip free after setup ");
+	out_num(chip_free);
+	out_str(" KB, cache peak ");
+	out_num(res_get_stats()->peak / 1024);
+	report(" KB");
 	out_str("  frames over twice their budget: ");
 	out_num(slow);
 	out_str(", taking ");

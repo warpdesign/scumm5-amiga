@@ -365,13 +365,15 @@ static void set_actor_redraw_flags(void)
 static void reset_actor_bgs(void)
 {
 	int i, j;
+	uint32_t u;
 
 	for (i = 0; i < SCREEN_WIDTH / 8; i++) {
 		int strip = g.screen_start_strip + i;
 		clear_gfx_usage_bit(strip, USAGE_BIT_DIRTY);
 		clear_gfx_usage_bit(strip, USAGE_BIT_RESTORED);
-		for (j = 1; j < NUM_ACTORS; j++)
-			if (test_gfx_usage_bit(strip, j) &&
+		/* actor j is bit j - 1 of the first word (NUM_ACTORS <= 32) */
+		for (u = gfx_usage[3 * strip], j = 1; u && j < NUM_ACTORS; u >>= 1, j++)
+			if ((u & 1) &&
 			    ((g.actors[j].top != 0x7fffffff && g.actors[j].needs_redraw) || g.actors[j].need_bg_reset)) {
 				clear_gfx_usage_bit(strip, j);
 				if (g.actors[j].bottom - g.actors[j].top >= 0)

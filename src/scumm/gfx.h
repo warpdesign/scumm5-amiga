@@ -24,6 +24,7 @@ struct vscreen {
 extern struct vscreen vscr[3];	/* 0 main, 1 text, 2 verbs */
 extern int num_zbuffer;
 extern int gfx_zbuffer_disabled;
+extern uint32_t gfx_image_key;	/* nonzero: identifies the image being drawn */
 extern uint8_t charset_mask_used;	/* main-screen charset mask may be non-zero */
 
 void gfx_init_screens(int b, int h);
@@ -39,6 +40,7 @@ void gfx_draw_box(int x, int y, int x2, int y2, int color);
 void gfx_draw_dirty_screen_parts(void);
 void gfx_full_dirty(void);
 void gfx_set_xstart(int xstart);
+void gfx_verb_cache_clear(void);
 
 uint8_t *vs_pixels(const struct vscreen *vs, int x, int y);
 uint8_t *vs_back_pixels(const struct vscreen *vs, int x, int y);
@@ -61,6 +63,9 @@ void display_set_palette(const uint8_t *rgb);
  * at byte 0 of a row and of equal parity. May run until display_sync(). */
 void display_copy_planes(uint8_t *dst, const uint8_t *src, int b0, int b1, int n);
 void display_sync(void);
+/* Sets pixels [x0, x1) of n interleaved rows from row0 to color. */
+void display_fill_planes(uint8_t *row0, int x0, int x1, int n, int color);
+void gfx_fill_planes_cpu(uint8_t *row0, int x0, int x1, int n, int color);
 void gfx_copy_planes_cpu(uint8_t *dst, const uint8_t *src, int b0, int b1, int n);
 
 #endif

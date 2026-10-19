@@ -185,6 +185,7 @@ struct cel_state {
 	int shr, mask;
 	int zbuf, shadow_mode;
 	uint8_t palette[32];
+	int has_shadow_color;		/* a non-transparent colour maps to 13 */
 	int min_x, max_x, min_y, max_y;
 	int draw;			/* 0: extents only */
 };
@@ -461,6 +462,168 @@ done:
 	}
 }
 
+/* Fast path for unscaled, unshadowed cels that fit vertically: one run
+ * table entry gives a byte's colour (palette applied), its length (0: the
+ * next byte holds it) and, in bit 7, transparency. Field order and widths
+ * are shared with costume68k.s. */
+struct cost_runs {
+	const uint8_t *src;
+	uint8_t *sp, *wp;
+	const uint8_t *zm, *cm, *tab;
+	int32_t len, pc, transparent;
+	int32_t height;			/* bit 31 set: columns go left */
+	int32_t columns, mode, maskbit;
+};
+
+#define RUN_TABS 4
+static struct {
+	uint8_t tab[512], pal[32];
+	int shr;
+	uint32_t used;
+} run_tabs[RUN_TABS];
+static uint32_t run_tab_clock;
+
+static const uint8_t *get_run_tab(const struct cel_state *st)
+{
+	int b, i, lru = 0;
+
+	for (i = 0; i < RUN_TABS; i++) {
+		if (run_tabs[i].used && run_tabs[i].shr == st->shr && !memcmp(run_tabs[i].pal, st->palette, 32)) {
+			run_tabs[i].used = ++run_tab_clock;
+			return run_tabs[i].tab;
+		}
+		if (run_tabs[i].used < run_tabs[lru].used)
+			lru = i;
+	}
+	for (b = 0; b < 256; b++) {
+		int c = b >> st->shr;
+		run_tabs[lru].tab[b] = st->palette[c];
+		run_tabs[lru].tab[256 + b] = (uint8_t)((b & st->mask) | (c ? 0 : 0x80));
+	}
+	memcpy(run_tabs[lru].pal, st->palette, 32);
+	run_tabs[lru].shr = st->shr;
+	run_tabs[lru].used = ++run_tab_clock;
+	return run_tabs[lru].tab;
+}
+
+#ifdef __mc68000__
+void cost_runs(const struct cost_runs *a);
+void cost_flush_row(uint8_t *wr, const uint8_t *c, uint8_t *d, int n);
+#else
+/* C model of costume68k.s cost_runs */
+static void cost_runs(const struct cost_runs *a)
+{
+	const uint8_t *src = a->src, *zm = a->zm, *cm = a->cm, *tab = a->tab;
+	uint8_t *sp = a->sp, *wp = a->wp;
+	int len = a->len, pc = a->pc, transparent = a->transparent;
+	int height = a->height & 0xffff, left = a->height < 0, h = height;
+	int columns = a->columns, mode = a->mode;
+	uint8_t maskbit = (uint8_t)a->maskbit;
+
+	for (;;) {
+		while (len) {
+			int n = len < h ? len : h, k;
+			len -= n;
+			h -= n;
+			for (k = 0; k < n; k++) {
+				if (!transparent) {
+					uint8_t m = mode == 0 ? 0 : mode == 1 ? *zm : (uint8_t)(*zm | *cm);
+					if (!(m & maskbit)) {
+						*sp = (uint8_t)pc;
+						*wp |= maskbit;
+					}
+				}
+				sp += SCREEN_WIDTH;
+				wp += NUM_STRIPS;
+				zm += NUM_STRIPS;
+				cm += NUM_STRIPS;
+			}
+			if (!h) {
+				if (!--columns)
+					return;
+				h = height;
+				sp -= (uint32_t)height * SCREEN_WIDTH;
+				wp -= (uint32_t)height * NUM_STRIPS;
+				zm -= (uint32_t)height * NUM_STRIPS;
+				cm -= (uint32_t)height * NUM_STRIPS;
+				if (left) {
+					sp--;
+					if (maskbit == 0x80) {
+						maskbit = 1;
+						wp--, zm--, cm--;
+					} else {
+						maskbit <<= 1;
+					}
+				} else {
+					sp++;
+					if (maskbit == 1) {
+						maskbit = 0x80;
+						wp++, zm++, cm++;
+					} else {
+						maskbit >>= 1;
+					}
+				}
+			}
+		}
+		{
+			int b = *src++;
+			pc = tab[b];
+			len = tab[256 + b] & 0x7f;
+			transparent = tab[256 + b] >> 7;
+			if (!len)
+				len = *src++;
+		}
+	}
+}
+#endif
+
+/* Draws a cel through cost_runs when it qualifies. Extents are the whole
+ * cel rectangle: the flush skips bytes nothing was written to. */
+static int rle_decode_fast(struct cel_state *st, struct rle *r, int height)
+{
+	struct cost_runs a;
+	int x = r->x, y = r->y, columns, last;
+	const uint8_t *zmask, *cmask;
+
+	if (st->scale_x != 255 || st->scale_y != 255 || st->shadow_mode & 0x20 || st->has_shadow_color)
+		return 0;
+	if (y < 0 || y + height > st->out_h || height <= 0 || height > 0xffff || x < 0 || x >= SCREEN_WIDTH)
+		return 0;
+	columns = r->scale_x_step > 0 ? SCREEN_WIDTH - x : x + 1;
+	if (columns > r->skip_width)
+		columns = r->skip_width;
+	if (columns <= 0)
+		return 1;
+
+	zmask = gfx_screen_mask_buffer(0, 0, st->zbuf);
+	cmask = gfx_screen_mask_buffer(0, 0, 0);
+	a.src = r->src;
+	a.sp = scratch + (uint32_t)y * SCREEN_WIDTH + (uint32_t)x;
+	a.wp = scratch_wr + (uint32_t)y * NUM_STRIPS + (uint32_t)(x >> 3);
+	a.mode = zmask != cmask ? (charset_mask_used ? 2 : 1) : (charset_mask_used ? 1 : 0);
+	a.zm = (a.mode ? zmask : cmask) + (uint32_t)y * NUM_STRIPS + (uint32_t)(x >> 3);
+	a.cm = cmask + (uint32_t)y * NUM_STRIPS + (uint32_t)(x >> 3);
+	a.tab = get_run_tab(st);
+	a.len = r->rep_len ? r->rep_len - 1 : 0;
+	a.pc = st->palette[r->rep_color];
+	a.transparent = r->rep_color == 0;
+	a.height = (int32_t)((uint32_t)height | (r->scale_x_step < 0 ? 0x80000000u : 0));
+	a.columns = columns;
+	a.maskbit = 0x80 >> (x & 7);
+	cost_runs(&a);
+
+	last = x + r->scale_x_step * (columns - 1);
+	if ((x < last ? x : last) < st->min_x)
+		st->min_x = x < last ? x : last;
+	if ((x > last ? x : last) > st->max_x)
+		st->max_x = x > last ? x : last;
+	if (y < st->min_y)
+		st->min_y = y;
+	if (y + height - 1 > st->max_y)
+		st->max_y = y + height - 1;
+	return 1;
+}
+
 /* BaseCostumeRenderer::paintCelByleRLECommon and ClassicCostumeRenderer::
  * paintCelByleRLE: cel rectangle, strip usage, extent, then pixels. */
 static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, int y_move_cur, int width, int height)
@@ -606,7 +769,7 @@ static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, i
 	if (height + top >= 256)
 		return 2;
 
-	if (st->draw) {
+	if (st->draw && !rle_decode_fast(st, &r, height)) {
 		if (height <= MAX_CEL_H)
 			rle_decode_runs(st, &r, height);
 		else
@@ -625,11 +788,16 @@ static void flush_scratch(struct cel_state *st)
 		uint8_t *wr = scratch_wr + (uint32_t)y * NUM_STRIPS + s0;
 		const uint8_t *c = scratch + (uint32_t)y * SCREEN_WIDTH + (uint32_t)s0 * 8;
 		uint8_t *d = vs_pixels(&vscr[0], s0 * 8, y);
+#ifdef __mc68000__
+		(void)s;
+		cost_flush_row(wr, c, d, s1 - s0 + 1);
+#else
 		for (s = s0; s <= s1; s++, wr++, c += 8, d++)
 			if (*wr) {
 				planar_put8(d, c, *wr);
 				*wr = 0;
 			}
+#endif
 	}
 }
 
@@ -688,6 +856,7 @@ int costume_draw(struct actor *a)
 			st.zbuf = num_zbuffer - 1;
 	}
 
+	memset(st.palette, 0, sizeof(st.palette));
 	if (VAR(VAR_CURRENT_LIGHTS) & LIGHTMODE_ACTOR_USE_COLORS) {
 		for (i = 0; i < num_colors; i++) {
 			uint8_t c = a->palette[i];
@@ -697,6 +866,11 @@ int costume_draw(struct actor *a)
 		memset(st.palette, 8, (size_t)num_colors);
 		st.palette[12] = 0;
 	}
+
+	st.has_shadow_color = 0;
+	for (i = 1; i < num_colors; i++)
+		if (st.palette[i] == 13)
+			st.has_shadow_color = 1;
 
 	for (limb = 0; limb < 16; limb++) {
 		const uint8_t *frameptr, *src;

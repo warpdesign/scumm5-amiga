@@ -211,6 +211,7 @@ struct verb_slot {
 	uint16_t imgindex;
 	int16_t orig_left;
 	uint8_t *name;		/* res_alloc'd text, or NULL */
+	uint32_t image_key;	/* VERB_IMAGE: room << 16 | object it was copied from */
 };
 
 enum { VERB_TEXT = 0, VERB_IMAGE = 1 };

@@ -10,7 +10,7 @@
 #include "res.h"
 #include "heap.h"
 
-#define VERSION 2
+#define VERSION 3
 #define HEADER_SIZE 60
 #define DIRENT_SIZE 12
 #define BGENT_SIZE 28

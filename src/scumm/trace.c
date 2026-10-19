@@ -82,17 +82,26 @@ void trace_text(const char *s)
 	put_str("\n");
 }
 
-/* Room scripts are addressed inside the ROOM block, which the pack stores
- * without RMIM; report offsets as they are in the original block. */
+/* Room scripts are addressed inside the ROOM block, which the pack
+ * rebuilds with converted images; report offsets as in the original block,
+ * using the S5OF table of top-level child offsets. */
 static uint32_t original_offset(const struct script_slot *ss, uint32_t offs)
 {
-	const struct res_bg *bg;
+	const uint8_t *room, *t;
+	int n, i;
 
 	if (ss->where != WIO_ROOM && ss->where != WIO_LOCAL)
 		return offs;
-	bg = res_room_bg(g.room_resource);
-	if (bg && bg->rmim_size && offs >= bg->rmim_offset)
-		offs += bg->rmim_size;
+	room = res_peek(RT_ROOM, g.room_resource);
+	t = room ? res_find(TAG('S', '5', 'O', 'F'), room) : 0;
+	if (!t)
+		return offs;
+	n = rd_be16(t + 8);
+	for (i = n - 1; i >= 0; i--) {
+		uint32_t nw = rd_be32(t + 10 + i * 8);
+		if (offs >= nw)
+			return offs - nw + rd_be32(t + 14 + i * 8);
+	}
 	return offs;
 }
 
