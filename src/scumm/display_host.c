@@ -10,6 +10,8 @@ static uint8_t fb[SCREEN_HEIGHT][SCREEN_WIDTH];
 static uint8_t pal[768];
 static const char *dump_dir;
 static uint32_t dump_every, dump_first, frames;
+static const uint16_t *cur_image;
+static int cur_x, cur_y, cur_color;
 
 void display_host_dump(const char *dir, uint32_t first, uint32_t every)
 {
@@ -46,6 +48,14 @@ void display_dirty(int v, int strip, int n, int top, int bottom)
 	}
 }
 
+void display_cursor(const uint16_t *image, int x, int y, int color)
+{
+	cur_image = image;
+	cur_x = x;
+	cur_y = y;
+	cur_color = color;
+}
+
 void display_present(void)
 {
 	char name[512];
@@ -61,8 +71,13 @@ void display_present(void)
 		return;
 	fprintf(f, "P6\n%d %d\n255\n", SCREEN_WIDTH, SCREEN_HEIGHT);
 	for (y = 0; y < SCREEN_HEIGHT; y++)
-		for (x = 0; x < SCREEN_WIDTH; x++)
-			fwrite(pal + fb[y][x] * 3, 1, 3, f);
+		for (x = 0; x < SCREEN_WIDTH; x++) {
+			int c = fb[y][x];
+			if (cur_image && y >= cur_y && y < cur_y + 16 && x >= cur_x && x < cur_x + 16 &&
+			    cur_image[y - cur_y] & (0x8000 >> (x - cur_x)))
+				c = cur_color;
+			fwrite(pal + c * 3, 1, 3, f);
+		}
 	fclose(f);
 }
 

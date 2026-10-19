@@ -171,6 +171,33 @@ void engine_boot(void)
 void (*prof_hook)(int phase);
 #define PROF(n) do { if (prof_hook) prof_hook(n); } while (0)
 
+/* resetCursors(): crosshair, hourglass, arrow, hand; the colour cycles as
+ * in animateCursor(), changing every other frame. */
+static const uint16_t cursor_images[4][16] = {
+	{ 0x0080, 0x0080, 0x0080, 0x0080, 0x0080, 0x0080, 0x0000, 0x7e3f,
+	  0x0000, 0x0080, 0x0080, 0x0080, 0x0080, 0x0080, 0x0080, 0x0000 },
+	{ 0x0000, 0x7ffe, 0x6006, 0x300c, 0x1818, 0x0c30, 0x0660, 0x03c0,
+	  0x0660, 0x0c30, 0x1998, 0x33cc, 0x67e6, 0x7ffe, 0x0000, 0x0000 },
+	{ 0x0000, 0x4000, 0x6000, 0x7000, 0x7800, 0x7c00, 0x7e00, 0x7f00,
+	  0x7f80, 0x78c0, 0x7c00, 0x4600, 0x0600, 0x0300, 0x0300, 0x0180 },
+	{ 0x1e00, 0x1200, 0x1200, 0x1200, 0x1200, 0x13ff, 0x1249, 0x1249,
+	  0xf249, 0x9001, 0x9001, 0x9001, 0x8001, 0x8001, 0x8001, 0xffff },
+};
+static const uint8_t cursor_hotspots[4][2] = { { 8, 7 }, { 8, 7 }, { 1, 1 }, { 5, 0 } };
+static const uint8_t cursor_colors[4] = { 15, 15, 7, 8 };
+static uint8_t cursor_anim, cursor_color = 15;
+
+static void update_cursor(void)
+{
+	int c = g.current_cursor;
+
+	if (!(cursor_anim & 1))
+		cursor_color = cursor_colors[(cursor_anim >> 1) & 3];
+	cursor_anim++;
+	display_cursor(g.cursor_state > 0 ? cursor_images[c] : 0, g.mouse.x - cursor_hotspots[c][0],
+		       g.mouse.y - cursor_hotspots[c][1], cursor_color);
+}
+
 static void draw_screen(void)
 {
 	if (palette_dirty) {
@@ -180,6 +207,7 @@ static void draw_screen(void)
 	PROF(6);
 	gfx_draw_dirty_screen_parts();
 	PROF(7);
+	update_cursor();
 	display_present();
 	PROF(8);
 }

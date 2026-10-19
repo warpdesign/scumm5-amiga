@@ -23,6 +23,14 @@ void display_dirty(int v, int strip, int n, int top, int bottom)
 	(void)bottom;
 }
 
+void display_cursor(const uint16_t *image, int x, int y, int color)
+{
+	(void)image;
+	(void)x;
+	(void)y;
+	(void)color;
+}
+
 void display_present(void)
 {
 }

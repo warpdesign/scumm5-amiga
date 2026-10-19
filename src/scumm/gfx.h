@@ -59,6 +59,9 @@ void display_dirty(int vs, int strip, int n, int top, int bottom);
 /* Shows the frame: copies dirty areas, palette, waits/flips. */
 void display_present(void);
 void display_set_palette(const uint8_t *rgb);
+/* Shows a 16x16 one-colour cursor (MSB leftmost) with its top-left corner
+ * at screen x, y on the next present; image 0 hides it. */
+void display_cursor(const uint16_t *image, int x, int y, int color);
 /* Copies byte columns [b0, b1) of n interleaved rows, dst and src pointing
  * at byte 0 of a row and of equal parity. May run until display_sync(). */
 void display_copy_planes(uint8_t *dst, const uint8_t *src, int b0, int b1, int n);

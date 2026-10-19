@@ -11,12 +11,17 @@
 #define FETCH_BYTES 48		/* 4x fetch, DDF $38-$d0 */
 #define DIW_TOP 0x2c
 #define CL_LONGS 700
+#define SPR_WORDS (2 + 2 * 16 + 2)
+#define CL_ALLOC (CL_LONGS * 4 + 4 + 2 * SPR_WORDS * 2)
 
 extern APTR GfxBase;
 void vbl_server(void);
 
 static uint8_t *disp[2];
 static ULONG *copper[2];
+static UWORD *sprites[2];	/* sprite 0, then sprite 1 attached to it */
+static const uint16_t *cur_image;
+static int cur_x, cur_y, cur_color;
 static uint16_t cl_palette;	/* longword index of the first palette move */
 static int back;		/* buffer being drawn */
 static int16_t pend_top[2][NUM_STRIPS], pend_bot[2][NUM_STRIPS];
@@ -120,14 +125,15 @@ static void write_palette(ULONG *cl)
 	*cl = 0xfffffffe;
 }
 
-static void build_copper(ULONG *cl, uint8_t *planes, UWORD *nullspr)
+static void build_copper(ULONG *cl, uint8_t *planes, UWORD *nullspr, UWORD *spr)
 {
 	ULONG *start = cl, p;
 	int i;
 
 	for (i = 0; i < 8; i++) {
-		cl = move(cl, (UWORD)(0x120 + i * 4), (UWORD)((ULONG)nullspr >> 16));
-		cl = move(cl, (UWORD)(0x122 + i * 4), (UWORD)(ULONG)nullspr);
+		p = i < 2 ? (ULONG)(spr + i * SPR_WORDS) : (ULONG)nullspr;
+		cl = move(cl, (UWORD)(0x120 + i * 4), (UWORD)(p >> 16));
+		cl = move(cl, (UWORD)(0x122 + i * 4), (UWORD)p);
 	}
 	cl = move(cl, 0x08e, DIW_TOP << 8 | 0x81);
 	cl = move(cl, 0x090, (UWORD)(((DIW_TOP + SCREEN_HEIGHT) & 0xff) << 8 | 0xc1));
@@ -135,8 +141,8 @@ static void build_copper(ULONG *cl, uint8_t *planes, UWORD *nullspr)
 	cl = move(cl, 0x094, 0x00d0);
 	cl = move(cl, 0x100, 0x0211);
 	cl = move(cl, 0x102, 0x0000);
-	cl = move(cl, 0x104, 0x0000);
-	cl = move(cl, 0x10c, 0x0011);
+	cl = move(cl, 0x104, 0x0024);	/* sprites in front */
+	cl = move(cl, 0x10c, 0x0000);	/* sprite colours 0-15 */
 	cl = move(cl, 0x1fc, 0x0003);
 	cl = move(cl, 0x108, DISP_PITCH - FETCH_BYTES);
 	cl = move(cl, 0x10a, DISP_PITCH - FETCH_BYTES);
@@ -159,10 +165,11 @@ int display_open(void)
 		disp[i] = AllocMem(DISP_SIZE + 16, MEMF_CHIP | MEMF_CLEAR);
 		if (disp[i])
 			disp[i] += 8;	/* shifted blits touch the word before a row; FMODE 3 needs 8-byte alignment */
-		copper[i] = AllocMem(CL_LONGS * 4 + 4, MEMF_CHIP | MEMF_CLEAR);
+		copper[i] = AllocMem(CL_ALLOC, MEMF_CHIP | MEMF_CLEAR);
 		if (!disp[i] || !copper[i])
 			return -1;
-		build_copper(copper[i], disp[i], (UWORD *)(copper[i] + CL_LONGS));
+		sprites[i] = (UWORD *)(copper[i] + CL_LONGS + 1);
+		build_copper(copper[i], disp[i], (UWORD *)(copper[i] + CL_LONGS), sprites[i]);
 	}
 
 	vbl_rate = *((signed char *)GfxBase + GFX_VBLANK);
@@ -183,7 +190,7 @@ int display_open(void)
 	WaitTOF();
 	*(volatile ULONG *)(CUSTOM + 0x080 / 2) = (ULONG)copper[1];
 	REG(0x088) = 0;
-	REG(0x096) = 0x83c0;
+	REG(0x096) = 0x83e0;
 	back = 0;
 	return 0;
 }
@@ -210,7 +217,7 @@ void display_close(void)
 		if (disp[i])
 			FreeMem(disp[i] - 8, DISP_SIZE + 16);
 		if (copper[i])
-			FreeMem(copper[i], CL_LONGS * 4 + 4);
+			FreeMem(copper[i], CL_ALLOC);
 		disp[i] = 0;
 		copper[i] = 0;
 	}
@@ -389,6 +396,35 @@ void display_sync(void)
 	wait_blit();
 }
 
+void display_cursor(const uint16_t *image, int x, int y, int color)
+{
+	cur_image = image;
+	cur_x = x;
+	cur_y = y;
+	cur_color = color;
+}
+
+/* The pair's 4 bit planes give the colour index directly (BPLCON4 bank 0). */
+static void write_sprites(UWORD *spr)
+{
+	int i, k;
+	UWORD v0 = (UWORD)(DIW_TOP + cur_y), v1 = (UWORD)(v0 + 16), h = (UWORD)(0x80 + cur_x);
+
+	for (k = 0; k < 2; k++, spr += SPR_WORDS) {
+		if (!cur_image || cur_x <= -16 || cur_y <= -16) {
+			spr[0] = spr[1] = 0;
+			continue;
+		}
+		spr[0] = (UWORD)((v0 & 0xff) << 8 | (h >> 1 & 0xff));
+		spr[1] = (UWORD)((v1 & 0xff) << 8 | (k ? 0x80 : 0) | (v0 >> 8 & 1) << 2 | (v1 >> 8 & 1) << 1 | (h & 1));
+		for (i = 0; i < 16; i++) {
+			spr[2 + i * 2] = cur_color >> (k * 2) & 1 ? cur_image[i] : 0;
+			spr[3 + i * 2] = cur_color >> (k * 2 + 1) & 1 ? cur_image[i] : 0;
+		}
+		spr[2 + 32] = spr[3 + 32] = 0;
+	}
+}
+
 /* The back buffer may still be on screen until the vertical blank after
  * the last flip, and a flip must not show a buffer still being copied. */
 void display_present(void)
@@ -396,6 +432,7 @@ void display_present(void)
 	if (vbl_count == flip_vbl)
 		WaitTOF();
 	copy_pending(back);
+	write_sprites(sprites[back]);
 	if (pal_pending) {
 		write_palette(copper[back]);
 		pal_pending--;
