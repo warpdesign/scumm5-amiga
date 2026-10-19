@@ -550,7 +550,11 @@ void redefine_builtin_cursor_from_char(int idx, int chr);
 void redefine_builtin_cursor_hotspot(int idx, int x, int y);
 
 /* ---- sound.c ---- */
+void sound_init(void);
+/* Loads what a sound needs before it can start (instrument samples). */
+extern void (*sound_prepare)(int sound);
 void sound_start(int sound);
+int sound_in_use(int sound);
 void sound_stop(int sound);
 void sound_stop_all(void);
 int sound_is_running(int sound);
@@ -560,6 +564,10 @@ void sound_update_music_timer(void);
 
 /* ---- input.c ---- */
 void process_input(void);
+extern uint8_t playback_like_scummvm;
+void input_key(int key);
+void input_click(int x, int y);
+void input_mouse(int x, int y, int left_clicks, int left_down, int right_clicks, int right_down);
 int playback_open(const char *path);
 void playback_pump(void);
 

@@ -10,3 +10,11 @@ vbl_server:
 	addq.l	#1,(%a1)
 	moveq	#0,%d0
 	rts
+
+| input.device handler: a0 = event list, a1 = is_Data; returns the list in d0.
+	.globl	input_stub
+input_stub:
+	move.l	%a0,-(%sp)
+	jsr	input_filter
+	addq.l	#4,%sp
+	rts

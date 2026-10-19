@@ -39,7 +39,7 @@ static int resource_in_use(uint16_t type, uint16_t idx)
 	case RT_COSTUME:
 		return is_costume_in_use(idx);
 	case RT_SOUND:
-		return sound_is_running(idx);
+		return sound_in_use(idx);
 	case RT_CHARSET:
 		return charset_cur_id() == idx;
 	}
@@ -137,7 +137,7 @@ static void reset_scumm(void)
 
 static void reset_scumm_vars(void)
 {
-	VAR(VAR_SOUNDCARD) = 0;		/* as ScummVM with no music device */
+	VAR(VAR_SOUNDCARD) = 3;		/* what ScummVM reports for MI2 on a MIDI device */
 	VAR(VAR_VIDEOMODE) = 19;
 	VAR(VAR_HEAPSPACE) = 1400;
 	VAR(VAR_FIXEDDISK) = 1;
@@ -155,6 +155,7 @@ int engine_init(const char *pack, uint32_t arena)
 	if (res_open(pack, arena))
 		return -1;
 	res_in_use = resource_in_use;
+	sound_init();
 	g.rnd_seed = 1;
 	read_index();
 	reset_scumm();

@@ -25,7 +25,7 @@ HOST = build/host
 HEADERS = $(wildcard src/*.h src/scumm/*.h)
 
 COMMON_SRC = util res heap
-SCUMM_SRC = vm ops5 object room boxes actor costume camera verbs text sound input engine trace gfx
+SCUMM_SRC = vm ops5 object room boxes actor costume camera verbs text sound imuse input engine trace gfx
 AMIGA_PROGS = roomview restest scummrun scumm5
 HOST_PROGS = restest scummrun
 
@@ -33,8 +33,11 @@ AMIGA_COMMON = $(OUT)/start.o $(OUT)/plat_amiga.o $(COMMON_SRC:%=$(OUT)/%.o)
 HOST_COMMON = $(HOST)/plat_host.o $(COMMON_SRC:%=$(HOST)/%.o)
 
 PACK = $(OUT)/$(shell echo $(GAME) | tr A-Z a-z).s5p
+BANK = $(PACK:.s5p=.s5b)
+# General MIDI SoundFont for the instrument bank (FluidR3_GM, MIT licence)
+SF2 ?= $(HOME)/Documents/Dev/soundfonts/fluid-deb/x/usr/share/sounds/sf2/FluidR3_GM.sf2
 
-all: $(AMIGA_PROGS:%=$(OUT)/%) $(HOST_PROGS:%=$(HOST)/%) $(PACK)
+all: $(AMIGA_PROGS:%=$(OUT)/%) $(HOST_PROGS:%=$(HOST)/%) $(PACK) $(if $(wildcard $(SF2)),$(BANK))
 
 AMIGA_SCUMM = $(SCUMM_SRC:%=$(OUT)/scumm/%.o) $(OUT)/costume68k.o
 HOST_SCUMM = $(SCUMM_SRC:%=$(HOST)/scumm/%.o)
@@ -49,14 +52,18 @@ $(OUT)/scumm/%.o: src/scumm/%.c $(HEADERS) | $(OUT)/scumm
 $(HOST)/scumm/%.o: src/scumm/%.c $(HEADERS) | $(HOST)/scumm
 	$(HOSTCC) $(HOSTCFLAGS) -c $< -o $@
 
-$(OUT)/scummrun.elf: $(OUT)/scummrun.o $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/scumm/display_null.o
-	$(CC) $(LDFLAGS) $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/scumm/display_null.o $< -lgcc -o $@
+$(OUT)/scummrun.elf: $(OUT)/scummrun.o $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/scumm/display_null.o $(OUT)/scumm/audio_null.o
+	$(CC) $(LDFLAGS) $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/scumm/display_null.o $(OUT)/scumm/audio_null.o $< -lgcc -o $@
 
-$(OUT)/scumm5.elf: $(OUT)/scumm_main.o $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/vbl.o
-	$(CC) $(LDFLAGS) $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/vbl.o $< -lgcc -o $@
+AMIGA_AUDIO = $(OUT)/audio_amiga.o $(OUT)/scumm/synth.o
 
-$(HOST)/scummrun: $(HOST)/scummrun.o $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/display_host.o
-	$(HOSTCC) $(HOSTCFLAGS) $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/display_host.o $< -o $@
+$(OUT)/scumm5.elf: $(OUT)/scumm_main.o $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/input_amiga.o $(OUT)/vbl.o $(AMIGA_AUDIO)
+	$(CC) $(LDFLAGS) $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/input_amiga.o $(OUT)/vbl.o $(AMIGA_AUDIO) $< -lgcc -o $@
+
+HOST_AUDIO = $(HOST)/scumm/audio_null.o $(HOST)/scumm/synth.o $(HOST)/scumm/paula_host.o
+
+$(HOST)/scummrun: $(HOST)/scummrun.o $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/display_host.o $(HOST_AUDIO)
+	$(HOSTCC) $(HOSTCFLAGS) $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/display_host.o $(HOST_AUDIO) $< -o $@
 
 $(OUT)/%.o: src/%.c $(HEADERS) | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -75,6 +82,10 @@ $(HOST)/%.o: src/%.c $(HEADERS) | $(HOST)
 
 $(HOST)/%: $(HOST)/%.o $(HOST_COMMON)
 	$(HOSTCC) $(HOSTCFLAGS) $(HOST_COMMON) $< -o $@
+
+# mkbank needs numpy, so it runs without -I.
+$(BANK): tools/mkbank.py tools/mkpack.py $(PACK_SRC) | $(OUT)
+	$(PYTHON) tools/mkbank.py $(SF2) $(PACK_SRC) -o $@
 
 $(PACK): tools/mkpack.py tools/room2planar.py $(PACK_SRC) | $(OUT)
 	$(PYTHON) -I tools/mkpack.py $(PACK_SRC) -o $@

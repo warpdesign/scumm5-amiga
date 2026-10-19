@@ -187,4 +187,101 @@ static inline void WaitTOF(void)
 	__asm volatile("jsr -270(%%a6)" : : "r"(a6) : "d0", "d1", "a0", "a1", "cc", "memory");
 }
 
+static inline void Disable(void)
+{
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -120(%%a6)" : : "r"(a6) : "d0", "d1", "a0", "a1", "cc", "memory");
+}
+
+static inline void Enable(void)
+{
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -126(%%a6)" : : "r"(a6) : "d0", "d1", "a0", "a1", "cc", "memory");
+}
+
+static inline APTR OpenResource(const char *name)
+{
+	register const char *a1 __asm("a1") = name;
+	register APTR d0 __asm("d0");
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -498(%%a6)" : "=r"(d0), "+r"(a1) : "r"(a6) : "d1", "a0", "cc", "memory");
+	return d0;
+}
+
+/* cia.resource: 0 if the interrupt bit was free and is now ours. */
+static inline APTR AddICRVector(APTR res, LONG bit, struct Interrupt *i)
+{
+	register LONG d0 __asm("d0") = bit;
+	register struct Interrupt *a1 __asm("a1") = i;
+	register APTR a6 __asm("a6") = res;
+	__asm volatile("jsr -6(%%a6)" : "+r"(d0), "+r"(a1) : "r"(a6) : "d1", "a0", "cc", "memory");
+	return (APTR)d0;
+}
+
+static inline void RemICRVector(APTR res, LONG bit, struct Interrupt *i)
+{
+	register LONG d0 __asm("d0") = bit;
+	register struct Interrupt *a1 __asm("a1") = i;
+	register APTR a6 __asm("a6") = res;
+	__asm volatile("jsr -12(%%a6)" : "+r"(d0), "+r"(a1) : "r"(a6) : "d1", "a0", "cc", "memory");
+}
+
+static inline APTR CreateMsgPort(void)
+{
+	register APTR d0 __asm("d0");
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -666(%%a6)" : "=r"(d0) : "r"(a6) : "d1", "a0", "a1", "cc", "memory");
+	return d0;
+}
+
+static inline void DeleteMsgPort(APTR port)
+{
+	register APTR a0 __asm("a0") = port;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -672(%%a6)" : "+r"(a0) : "r"(a6) : "d0", "d1", "a1", "cc", "memory");
+}
+
+static inline APTR CreateIORequest(APTR port, ULONG size)
+{
+	register APTR a0 __asm("a0") = port;
+	register ULONG d0 __asm("d0") = size;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -654(%%a6)" : "+r"(d0), "+r"(a0) : "r"(a6) : "d1", "a1", "cc", "memory");
+	return (APTR)d0;
+}
+
+static inline void DeleteIORequest(APTR io)
+{
+	register APTR a0 __asm("a0") = io;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -660(%%a6)" : "+r"(a0) : "r"(a6) : "d0", "d1", "a1", "cc", "memory");
+}
+
+static inline LONG OpenDevice(const char *name, ULONG unit, APTR io, ULONG flags)
+{
+	register const char *a0 __asm("a0") = name;
+	register ULONG d0 __asm("d0") = unit;
+	register APTR a1 __asm("a1") = io;
+	register ULONG d1 __asm("d1") = flags;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -444(%%a6)" : "+r"(d0), "+r"(d1), "+r"(a0), "+r"(a1) : "r"(a6) : "cc", "memory");
+	return (signed char)d0;
+}
+
+static inline void CloseDevice(APTR io)
+{
+	register APTR a1 __asm("a1") = io;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -450(%%a6)" : "+r"(a1) : "r"(a6) : "d0", "d1", "a0", "cc", "memory");
+}
+
+static inline LONG DoIO(APTR io)
+{
+	register APTR a1 __asm("a1") = io;
+	register LONG d0 __asm("d0");
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -456(%%a6)" : "=r"(d0), "+r"(a1) : "r"(a6) : "d1", "a0", "cc", "memory");
+	return (signed char)d0;
+}
+
 #endif

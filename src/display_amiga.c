@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "amiga.h"
+#include "scumm/scumm.h"
 #include "scumm/gfx.h"
 
 #define DISP_PLANE 40
@@ -22,6 +23,9 @@ static ULONG *copper[2];
 static UWORD *sprites[2];	/* sprite 0, then sprite 1 attached to it */
 static const uint16_t *cur_image;
 static int cur_x, cur_y, cur_color;
+static volatile UBYTE live;		/* the pointer follows the mouse between frames */
+static volatile int ptr_x, ptr_y;
+static int hot_x, hot_y;
 static uint16_t cl_palette;	/* longword index of the first palette move */
 static int back;		/* buffer being drawn */
 static int16_t pend_top[2][NUM_STRIPS], pend_bot[2][NUM_STRIPS];
@@ -32,7 +36,7 @@ static APTR oldview;
 static volatile ULONG vbl_count;
 static ULONG flip_vbl;
 static struct Interrupt vbl_int;
-static int vbl_rate;
+static int vbl_rate = 50;
 
 static int blit_owned;
 
@@ -402,27 +406,57 @@ void display_cursor(const uint16_t *image, int x, int y, int color)
 	cur_x = x;
 	cur_y = y;
 	cur_color = color;
+	hot_x = g.mouse.x - x;
+	hot_y = g.mouse.y - y;
+}
+
+static void sprite_pos(UWORD *spr, int x, int y)
+{
+	UWORD v0 = (UWORD)(DIW_TOP + y), v1 = (UWORD)(v0 + 16), h = (UWORD)(0x80 + x);
+	int k;
+
+	for (k = 0; k < 2; k++, spr += SPR_WORDS) {
+		if (!cur_image || x <= -16 || y <= -16) {
+			spr[0] = spr[1] = 0;
+			continue;
+		}
+		spr[0] = (UWORD)((v0 & 0xff) << 8 | (h >> 1 & 0xff));
+		spr[1] = (UWORD)((v1 & 0xff) << 8 | (k ? 0x80 : 0) | (v0 >> 8 & 1) << 2 | (v1 >> 8 & 1) << 1 | (h & 1));
+	}
+}
+
+/* From the input handler, at every mouse move: places the pointer in both
+ * buffers at once, so it moves at the mouse's rate rather than the game's. */
+void display_pointer(int x, int y)
+{
+	ptr_x = x;
+	ptr_y = y;
+	live = 1;
+	if (!sprites[0])
+		return;
+	sprite_pos(sprites[0], x - hot_x, y - hot_y);
+	sprite_pos(sprites[1], x - hot_x, y - hot_y);
 }
 
 /* The pair's 4 bit planes give the colour index directly (BPLCON4 bank 0). */
 static void write_sprites(UWORD *spr)
 {
 	int i, k;
-	UWORD v0 = (UWORD)(DIW_TOP + cur_y), v1 = (UWORD)(v0 + 16), h = (UWORD)(0x80 + cur_x);
 
-	for (k = 0; k < 2; k++, spr += SPR_WORDS) {
-		if (!cur_image || cur_x <= -16 || cur_y <= -16) {
-			spr[0] = spr[1] = 0;
-			continue;
-		}
-		spr[0] = (UWORD)((v0 & 0xff) << 8 | (h >> 1 & 0xff));
-		spr[1] = (UWORD)((v1 & 0xff) << 8 | (k ? 0x80 : 0) | (v0 >> 8 & 1) << 2 | (v1 >> 8 & 1) << 1 | (h & 1));
+	for (k = 0; k < 2; k++) {
+		UWORD *d = spr + k * SPR_WORDS;
 		for (i = 0; i < 16; i++) {
-			spr[2 + i * 2] = cur_color >> (k * 2) & 1 ? cur_image[i] : 0;
-			spr[3 + i * 2] = cur_color >> (k * 2 + 1) & 1 ? cur_image[i] : 0;
+			d[2 + i * 2] = cur_image && cur_color >> (k * 2) & 1 ? cur_image[i] : 0;
+			d[3 + i * 2] = cur_image && cur_color >> (k * 2 + 1) & 1 ? cur_image[i] : 0;
 		}
-		spr[2 + 32] = spr[3 + 32] = 0;
+		d[2 + 32] = d[3 + 32] = 0;
 	}
+	Disable();
+	if (live)
+		sprite_pos(spr, ptr_x - hot_x, ptr_y - hot_y);
+	else
+		sprite_pos(spr, cur_x, cur_y);
+	Enable();
 }
 
 /* The back buffer may still be on screen until the vertical blank after

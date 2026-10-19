@@ -21,6 +21,32 @@ void start_scene(int room, struct actor *a, int object);
 
 static uint16_t key_pressed;
 
+void input_key(int key)
+{
+	key_pressed = (uint16_t)key;
+}
+
+void input_click(int x, int y)
+{
+	g.mouse.x = (int16_t)x;
+	g.mouse.y = (int16_t)y;
+	g.left_btn_pressed |= MS_CLICKED;
+}
+
+void input_mouse(int x, int y, int left_clicks, int left_down, int right_clicks, int right_down)
+{
+	g.mouse.x = (int16_t)x;
+	g.mouse.y = (int16_t)y;
+	if (left_clicks)
+		g.left_btn_pressed |= MS_CLICKED | MS_DOWN;
+	if (!left_down)
+		g.left_btn_pressed &= (uint8_t)~MS_DOWN;
+	if (right_clicks)
+		g.right_btn_pressed |= MS_CLICKED | MS_DOWN;
+	if (!right_down)
+		g.right_btn_pressed &= (uint8_t)~MS_DOWN;
+}
+
 void clear_clicked_status(void)
 {
 	key_pressed = 0;
@@ -90,7 +116,8 @@ struct frame_event {
 
 static struct frame_event *events;
 static uint32_t num_events, next_event;
-static uint8_t loaded, active, started;
+static uint8_t loaded, active, started, vars_applied;
+uint8_t playback_like_scummvm;
 static uint16_t prev_mbs;
 static uint8_t has_prev_mbs, pending_lup, pending_rup;
 static int16_t cur_x, cur_y;
@@ -249,6 +276,43 @@ static int sputm_debug_key(uint16_t key)
 	return 1;
 }
 
+static void apply_demo_override(void)
+{
+	g.vars[56] = 203;
+	VAR(VAR_OVERRIDE) = 1;
+}
+
+static void start_playback(void)
+{
+	active = 1;
+	next_event = 0;
+	has_prev_mbs = 0;
+	prev_mbs = 0;
+	pending_lup = pending_rup = 0;
+	sputm_active = 0;
+	cur_x = g.mouse.x;
+	cur_y = g.mouse.y;
+	started = 1;
+}
+
+/* ScummVM starts the recording in room 4 instead, which the reference
+ * traces need. */
+static void arm_like_scummvm(void)
+{
+	if (!vars_applied && g.current_room == 3) {
+		apply_demo_override();
+		vars_applied = 1;
+	}
+	if (g.current_room == 4) {
+		if (!active)
+			start_playback();
+		if (!vars_applied) {
+			apply_demo_override();
+			vars_applied = 1;
+		}
+	}
+}
+
 static void mouse_event(int16_t x, int16_t y, int down_left, int down_right)
 {
 	if (down_left)
@@ -266,17 +330,10 @@ void playback_pump(void)
 
 	/* DOS replays the recording from the first frame; its early Escape
 	 * skips the opening cutscene, so the demo never shows room 4. */
-	if (loaded && !started) {
-		active = 1;
-		next_event = 0;
-		has_prev_mbs = 0;
-		prev_mbs = 0;
-		pending_lup = pending_rup = 0;
-		sputm_active = 0;
-		cur_x = g.mouse.x;
-		cur_y = g.mouse.y;
-		started = 1;
-	}
+	if (loaded && playback_like_scummvm)
+		arm_like_scummvm();
+	else if (loaded && !started)
+		start_playback();
 
 	if (!active)
 		return;
@@ -301,8 +358,13 @@ void playback_pump(void)
 	}
 	mouse_event(cur_x, cur_y, 0, 0);
 
-	g.virtual_mouse.x = (int16_t)(cur_x + g.screen_start_strip * 8);
-	g.virtual_mouse.y = (int16_t)(cur_y + g.screen_top);
+	if (playback_like_scummvm && g.current_room == 4) {
+		g.virtual_mouse.x = cur_x;
+		g.virtual_mouse.y = cur_y;
+	} else {
+		g.virtual_mouse.x = (int16_t)(cur_x + g.screen_start_strip * 8);
+		g.virtual_mouse.y = (int16_t)(cur_y + g.screen_top);
+	}
 
 	prev = has_prev_mbs ? prev_mbs : 0;
 	cur = fev->mbs;
@@ -316,7 +378,7 @@ void playback_pump(void)
 	}
 
 	if (fev->key != 0) {
-		if (fev->key == 27 && !sputm_active)
+		if (fev->key == 27 && !sputm_active && !playback_like_scummvm)
 			key_pressed = 27;	/* through process_input: aborts the cutscene */
 		else if (!sputm_debug_key(fev->key))
 			g.mouse_and_keyboard_stat = fev->key;

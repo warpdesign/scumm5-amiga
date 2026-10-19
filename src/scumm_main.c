@@ -2,12 +2,15 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Usage: scumm5 PACK [-r DEMO.REC] [-a ARENA_KB] [-n FRAMES]
- * For now input comes only from a DEMO.REC playback; the left mouse button
- * quits.
+ * Mouse and keyboard play the game, or DEMO.REC drives it with -r (then the
+ * left mouse button quits). Ctrl-C or Alt-X quits. Music plays if the
+ * instrument bank (PACK with .s5b instead of .s5p) is next to the pack.
  */
 #include "amiga.h"
 #include "scumm/scumm.h"
 #include "scumm/gfx.h"
+#include "scumm/imuse.h"
+#include "scumm/synth.h"
 #include "util.h"
 
 APTR GfxBase;
@@ -18,6 +21,13 @@ uint32_t display_jiffies(void);
 void display_wait_vbl(void);
 uint32_t display_lines(void);
 extern void (*prof_hook)(int phase);
+int audio_open(void);
+void audio_close(void);
+uint32_t audio_paula_clock(void);
+extern uint32_t audio_ticks, audio_lines_imuse, audio_lines_synth;
+int input_open(int pointer);
+void input_close(void);
+int input_poll(void);
 
 #define NUM_PHASES 14
 static uint32_t prof_acc[NUM_PHASES], prof_last;
@@ -37,11 +47,14 @@ static void prof(int phase)
 	prof_last = now;
 }
 
-#define ARENA_RESERVE_KB 600
+#define SYNTH_POOL_KB 256
+#define ARENA_RESERVE_KB (600 + SYNTH_POOL_KB)
 
 int app_main(int argc, char **argv)
 {
 	const char *p, *pack = 0, *rec = 0;
+	char bank[128];
+	int music = 0;
 	uint32_t arena = 0, next, frames = 0, late = 0, max_frames = 0, busy = 0, t0, start = 0, ideal = 0, slow = 0, slow_j = 0, over = 0, chip_free = 0, worst = 0, worst_frame = 0, d;
 	int n, rc = 20;
 
@@ -77,6 +90,19 @@ int app_main(int argc, char **argv)
 		report("scumm: graphics.library V39 (AGA) required");
 		return 20;
 	}
+	n = (int)strlen(pack);
+	if (n > 4 && n < (int)sizeof(bank)) {
+		memcpy(bank, pack, (size_t)n + 1);
+		bank[n - 1] = 'b';
+		if (!synth_open(bank, audio_paula_clock(), SYNTH_POOL_KB * 1024)) {
+			music = 1;
+			imuse_midi_send = synth_midi;
+			synth_sound_active = sound_in_use;
+			sound_prepare = synth_prepare;
+		}
+	}
+	if (!music)
+		report("scumm: no instrument bank, no music");
 	if (engine_init(pack, arena * 1024)) {
 		report("scumm: cannot open pack");
 		goto out;
@@ -88,12 +114,16 @@ int app_main(int argc, char **argv)
 		goto out;
 	}
 
+	if (input_open(!rec))
+		report("scumm: no input.device handler");
+	if (music && audio_open())
+		report("scumm: no CIA-B timer for the music");
 	chip_free = AvailMem(MEMF_CHIP) / 1024;
 	prof_hook = prof;
 	res_clock = display_lines;
 	engine_boot();
 	start = next = display_jiffies();
-	while (!g.quit && (CIAA_PRA & 0x40) && (!max_frames || frames < max_frames)) {
+	while (!g.quit && (!rec || (CIAA_PRA & 0x40)) && (!max_frames || frames < max_frames)) {
 		int delta = VAR(VAR_TIMER_NEXT) < 1 ? 1 : VAR(VAR_TIMER_NEXT);
 		next += (uint32_t)delta;
 		ideal += (uint32_t)delta;
@@ -104,6 +134,8 @@ int app_main(int argc, char **argv)
 			next = display_jiffies();
 		}
 		t0 = display_jiffies();
+		if (input_poll())
+			break;
 		display_sync();
 		memcpy(prof_before, prof_acc, sizeof(prof_acc));
 		engine_frame();
@@ -126,6 +158,8 @@ int app_main(int argc, char **argv)
 	rc = 0;
 
 out:
+	audio_close();
+	input_close();
 	display_close();
 	out_str("scumm: ");
 	out_num(frames);
@@ -161,6 +195,13 @@ out:
 	out_str(" bytes in ");
 	out_num(res_get_stats()->read_time / 313);
 	report(" frames");
+	out_str("  music: ");
+	out_num(audio_ticks);
+	out_str(" ticks, iMUSE ");
+	out_num(audio_lines_imuse / 313);
+	out_str(" frames, synth ");
+	out_num(audio_lines_synth / 313);
+	report(" frames");
 	for (n = 0; n < NUM_PHASES; n++) {
 		out_str("  ");
 		out_str(prof_names[n]);
@@ -170,6 +211,7 @@ out:
 		out_num(prof_worst[n] / 313);
 		report(")");
 	}
+	synth_close();
 	res_close();
 	CloseLibrary(GfxBase);
 	return rc;
