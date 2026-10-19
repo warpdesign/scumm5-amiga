@@ -10,10 +10,10 @@
  * and BPLCON1 delays the picture by 0-63 px. Fetch starts one 64 px block
  * early so the delayed left edge has data.
  */
+#include "amiga.h"
 #include "res.h"
 #include "util.h"
 
-APTR DOSBase;
 APTR GfxBase;
 
 #define PLANES 8
@@ -94,10 +94,9 @@ static void set_scroll(ULONG *cl, const UBYTE *planes, UWORD rowbytes, UWORD x)
 #define CL_LONGS 768		/* one list is ~590 moves */
 #define COPPER_SIZE (2 * CL_LONGS * 4)	/* two lists, then an empty sprite */
 
-int amiga_main(const char *args, ULONG arglen)
+int app_main(int argc, char **argv)
 {
-	char name[108];
-	const char *p = args;
+	const char *p;
 	const struct res_bg *bg;
 	const UBYTE *room, *clut;
 	ULONG frames = 0, n = 0, plane_size = 0, alloc_size = 0;
@@ -109,24 +108,22 @@ int amiga_main(const char *args, ULONG arglen)
 	APTR oldview;
 	int rc = 20;
 
-	(void)arglen;
-	p = skip_spaces(p);
-	while (*p > ' ' && n < sizeof(name) - 1)
-		name[n++] = *p++;
-	name[n] = 0;
-	p = skip_spaces(p);
+	if (argc < 3) {
+		report("usage: roomview PACK ROOM [FRAMES [X]]");
+		return 20;
+	}
+	p = argv[2];
 	room_no = (UWORD)parse_uint(&p);
-	p = skip_spaces(p);
-	frames = parse_uint(&p);
-	p = skip_spaces(p);
-	if (*p >= '0' && *p <= '9') {
+	if (argc > 3) {
+		p = argv[3];
+		frames = parse_uint(&p);
+	}
+	if (argc > 4) {
+		p = argv[4];
 		x = (UWORD)parse_uint(&p);
 		fixed = 1;
 	}
 
-	DOSBase = OpenLibrary("dos.library", 36);
-	if (!DOSBase)
-		return 20;
 	GfxBase = OpenLibrary("graphics.library", 39);
 	if (!GfxBase) {
 		report("roomview: graphics.library V39 (AGA) required");
@@ -137,7 +134,7 @@ int amiga_main(const char *args, ULONG arglen)
 		goto out;
 	}
 
-	if (res_open(name, ARENA_SIZE)) {
+	if (res_open(argv[1], ARENA_SIZE)) {
 		report("roomview: cannot open pack");
 		goto out;
 	}
@@ -215,6 +212,5 @@ out:
 	res_close();
 	if (GfxBase)
 		CloseLibrary(GfxBase);
-	CloseLibrary(DOSBase);
 	return rc;
 }

@@ -34,8 +34,8 @@ strip is 45 KB per 320 px of room width.
 
 | Item                                   | Estimate      | Notes |
 |----------------------------------------|---------------|-------|
-| Interpreter code                       | ~300 KB       | |
-| Resource cache                         | ~400-550 KB   | ScummVM's own v5 limit; DOS 256-colour resources are larger than Amiga ones |
+| Interpreter code                       | ~300 KB       | core without drawing/iMUSE: 70 KB |
+| Resource cache                         | ~400-550 KB   | MI2 demo: 400 KB arena peaks at 385 KB (milestone 4) |
 | Room playfield (8 bpl, wide)           | ~90-120 KB    | measured: demo room 7, 784x144 padded to 832 = 117 KB |
 | Clean background copy (actor restore)  | ~90-120 KB    | same size as playfield; could be avoided by re-decoding strips |
 | Z-plane masks (1 bpl each)             | ~10-35 KB     | |
@@ -122,9 +122,10 @@ than a 5-bitplane design; wide rooms and the resource cache are the knobs.
 
 ## Layout
 
-- `src/`     interpreter (C + 68k asm)
-- `tools/`   host-side converters
-- `scripts/` build and Copperline run scripts
+- `src/`        platform layer, resource loader, test programs
+- `src/scumm/`  the SCUMM v5 interpreter (portable C)
+- `tools/`      host-side converters and the trace comparer
+- `scripts/`    build, Copperline and trace scripts
 
 ## Building and running
 
@@ -136,14 +137,26 @@ override `AROS_BUILD`), Python 3, and Copperline.
     scripts/run-roomview.sh 7 out.png # headless screenshot
     ROOMVIEW_ARGS="0 100" scripts/run-roomview.sh 7   # hold room column 100
     scripts/run-restest.sh [ARENA_KB [ACCESSES]]      # resource loader test
+    build/host/scummrun build/amiga/mi2demo.s5p 2000 -r scumm-data/mi2demo/DEMO.REC
+    scripts/scummvm-trace.sh ref.txt 600              # ScummVM reference trace
+    scripts/trace-compare.sh ref.txt 6000             # our trace against it
 
 Rooms wider than 320 px scroll back and forth, 1 px per frame. `make` builds
 the resource pack from `$(DATA)/$(GAME).0*` (defaults: `scumm-data/mi2demo`,
 `MI2DEMO`) with `tools/mkpack.py`; its docstring describes the pack format.
 
-Programs are freestanding (no libc, own startup and inline OS calls in
-`src/amiga.h`), linked as relocatable ELF and converted to hunk format, so
-they run on Kickstart 3.x as well as AROS.
+Amiga programs are freestanding (no libc, own startup and inline OS calls
+in `src/amiga.h`), linked as relocatable ELF and converted to hunk format,
+so they run on Kickstart 3.x as well as AROS. Portable code goes through
+`src/platform.h`; `make` also builds host versions (`build/host/`, with
+AddressSanitizer) of the programs that do not touch the hardware.
+
+`scummrun PACK [FRAMES] [-t TRACE] [-r DEMO.REC] [-a ARENA_KB]` runs the
+interpreter without display or sound, optionally writing a trace in
+ScummVM's `--debugflags=OPCODES,SCRIPTS` format. The reference script needs
+a SCUMM-enabled ScummVM build (`$SCUMMVM`), built out of tree, for example:
+`../scummvm/configure --disable-all-engines --enable-engine=scumm` in an
+empty directory.
 
 `tools/room2planar.py DATAFILE --list` lists rooms; `--room N --png F.png`
 writes one background as a PNG (demo rooms 2-32 are in `MI2DEMO.001`, 46-93
@@ -198,6 +211,32 @@ veto for the interpreter. Notes:
   256 KB arena (4000 accesses) and 384 KB (20000).
 - `roomview` now reads rooms through the loader, palette from the room's
   CLUT block.
+
+Milestone 4 done: the SCUMM v5 interpreter core (`src/scumm/`, portable C
+ported from ScummVM's v5 code with ScummVM's optional enhancements off),
+running headless. It covers the script VM and all v5 opcodes, objects and
+inventory, room entry, walk boxes and path finding, actor walking and
+turning, costume animation and actor extents (for "actor under cursor"),
+camera, verbs and clicks, message layout and timing, the sound command
+queue, ScummVM's seeded random generator and the MI2 demo's `DEMO.REC`
+input playback. Results:
+
+- Opcode-for-opcode identical to ScummVM: all 144,775 trace lines of a
+  10-minute ScummVM run of the MI2 demo (boot, intro, and the recorded demo
+  through rooms 7, 14, 12, 51) match ours.
+- The emulated A1200 (2 MB chip, no fast RAM) produces a byte-identical
+  trace to the host build.
+- The whole demo recording (8,284 frames) plays through without errors.
+- Speed on the emulated 14 MHz 020, no display yet: 300 s of game time in
+  64 s (about 21% CPU). The actor-extent pass is most of it; it becomes the
+  costume renderer's sizing step later.
+- The cache (400 KB arena) peaks at 385 KB; the program is 70 KB.
+
+Not done yet: drawing (backgrounds per room are shown by `roomview` only;
+objects, actors and text are state only), iMUSE (a sound counts as running
+only while queued, so traces diverge where scripts wait on music; ScummVM
+with a null driver still times songs in real time), the Amiga input path
+(mouse/keys outside playback), save/load.
 
 ## License and provenance
 

@@ -26,7 +26,7 @@
 
 Pack layout, all big-endian, blobs 4-byte aligned:
   0   char[4] 'S5PK'
-  4   u16     version (1)
+  4   u16     version (2)
   6   u16     number of resource types (5)
   8   5 x {u16 count, u16 0, u32 directory offset}
       types: 0 room, 1 script, 2 costume, 3 sound, 4 charset
@@ -34,7 +34,9 @@ Pack layout, all big-endian, blobs 4-byte aligned:
   52  u32     index blob offset, u32 index blob size
   directory entry:  u32 offset, u32 size, u32 checksum (all 0: absent)
   background entry: u32 offset, u32 size, u32 checksum,
-                    u16 padded width, u16 height, u16 width, u16 0
+                    u16 padded width, u16 height, u16 width, u16 0,
+                    u32 RMIM offset and u32 RMIM size in the original ROOM
+                    block (lets traces report original script offsets)
 
 Resources are stored un-XORed and byte-identical to what ScummVM holds in
 memory, except: a room is its ROOM block without RMIM (the background
@@ -85,9 +87,16 @@ def read_index(idx):
 
 
 def strip_rmim(data, off):
+    """ROOM block without RMIM, plus RMIM's offset and size in the original."""
     size = struct.unpack_from('>I', data, off + 4)[0]
-    body = b''.join(data[p:p + s] for t, p, s in blocks(data, off + 8, off + size) if t != 'RMIM')
-    return b'ROOM' + struct.pack('>I', len(body) + 8) + body
+    parts, rmim = [], (0, 0)
+    for t, p, s in blocks(data, off + 8, off + size):
+        if t == 'RMIM':
+            rmim = (p - off, s)
+        else:
+            parts.append(data[p:p + s])
+    body = b''.join(parts)
+    return b'ROOM' + struct.pack('>I', len(body) + 8) + body, rmim
 
 
 def pick_sound(data, off):
@@ -178,17 +187,18 @@ def build(index_path, data_paths, verbose):
             if loc is None or (t > 0 and rn == 0 and roff == 0):
                 entries += bytes(12)
                 if t == 0:
-                    bg_dir += bytes(20)
+                    bg_dir += bytes(28)
                 continue
             data = files[loc[0]]
             off = loc[1] + roff
             if data[off:off + 4] != TAGS[t]:
                 raise ValueError('%s %d: expected %s at %d, found %r' % (NAMES[t], i, TAGS[t], off, data[off:off + 4]))
             if t == 0:
-                res = strip_rmim(data, off)
+                res, rmim = strip_rmim(data, off)
                 width, height, _, pixels = decode_room(data, off)
                 pw, planes = to_planar(width, height, pixels, table)
-                bg_dir += struct.pack('>IIIHHHH', w.blob(planes), len(planes), checksum(planes), pw, height, width, 0)
+                bg_dir += struct.pack('>IIIHHHHII', w.blob(planes), len(planes), checksum(planes), pw, height, width, 0,
+                                      rmim[0], rmim[1])
                 totals[-1] += len(planes)
             elif t == 3:
                 res = pick_sound(data, off)
@@ -205,7 +215,7 @@ def build(index_path, data_paths, verbose):
 
     bg_off = w.blob(bytes(bg_dir))
     idx_off = w.blob(index_blob)
-    hdr = b'S5PK' + struct.pack('>HH', 1, len(TYPES))
+    hdr = b'S5PK' + struct.pack('>HH', 2, len(TYPES))
     for count, off in dirs:
         hdr += struct.pack('>HHI', count, 0, off)
     hdr += struct.pack('>III', bg_off, idx_off, len(index_blob))

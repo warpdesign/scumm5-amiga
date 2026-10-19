@@ -10,26 +10,16 @@
 #include "heap.h"
 #include "util.h"
 
-APTR DOSBase;
-APTR GfxBase;
-
 #define MAX_LOCKS 4
 
 struct ref {
-	UWORD type, idx;
+	uint16_t type, idx;
 };
 
 static const char *const type_name[RT_COUNT] = { "rooms", "scripts", "costumes", "sounds", "charsets" };
-static ULONG errors;
+static uint32_t errors;
 
-static ULONG ticks(void)
-{
-	LONG ds[3];
-	DateStamp(ds);
-	return (ULONG)ds[1] * 3000 + (ULONG)ds[2];
-}
-
-static void fail(const char *what, UWORD type, UWORD idx)
+static void fail(const char *what, uint16_t type, uint16_t idx)
 {
 	errors++;
 	out_str("restest: ");
@@ -41,7 +31,7 @@ static void fail(const char *what, UWORD type, UWORD idx)
 	report("");
 }
 
-static int is_locked(const struct ref *locks, UWORD n, const struct ref *r)
+static int is_locked(const struct ref *locks, uint16_t n, const struct ref *r)
 {
 	while (n--)
 		if (locks[n].type == r->type && locks[n].idx == r->idx)
@@ -49,7 +39,7 @@ static int is_locked(const struct ref *locks, UWORD n, const struct ref *r)
 	return 0;
 }
 
-static void check(UWORD type, UWORD idx)
+static void check(uint16_t type, uint16_t idx)
 {
 	if (!res_get(type, idx))
 		fail("load failed", type, idx);
@@ -57,7 +47,7 @@ static void check(UWORD type, UWORD idx)
 		fail("bad checksum", type, idx);
 }
 
-static void report_time(const char *what, ULONG bytes, ULONG t)
+static void report_time(const char *what, uint32_t bytes, uint32_t t)
 {
 	out_str("restest: ");
 	out_str(what);
@@ -96,35 +86,34 @@ static void report_stats(const char *when)
 	report("");
 }
 
-int amiga_main(const char *args, ULONG arglen)
+int app_main(int argc, char **argv)
 {
-	char name[108];
-	const char *p = args;
-	ULONG n = 0, arena, accesses, nrefs = 0, bytes, t0, seed = 12345, i;
+	const char *p;
+	uint32_t arena = 256, accesses = 2000, nrefs = 0, bytes, t0, seed = 12345, i;
 	struct ref *refs = 0, locks[MAX_LOCKS];
-	UWORD type, idx, nlocks = 0, maxbg = 0, cur_room = 0, nlocks_room = 0;
-	ULONG bgmax = 0;
-	UBYTE *bgbuf = 0;
+	uint16_t type, idx, nlocks = 0, maxbg = 0, cur_room = 0, nlocks_room = 0;
+	uint32_t bgmax = 0;
+	uint8_t *bgbuf = 0;
 	int rc = 20;
 
-	(void)arglen;
-	p = skip_spaces(p);
-	while (*p > ' ' && n < sizeof(name) - 1)
-		name[n++] = *p++;
-	name[n] = 0;
-	p = skip_spaces(p);
-	arena = parse_uint(&p);
-	p = skip_spaces(p);
-	accesses = parse_uint(&p);
+	if (argc < 2) {
+		report("usage: restest PACK [ARENA_KB [ACCESSES]]");
+		return 20;
+	}
+	if (argc > 2) {
+		p = argv[2];
+		arena = parse_uint(&p);
+	}
+	if (argc > 3) {
+		p = argv[3];
+		accesses = parse_uint(&p);
+	}
 	if (!arena)
 		arena = 256;
 	if (!accesses)
 		accesses = 2000;
 
-	DOSBase = OpenLibrary("dos.library", 36);
-	if (!DOSBase)
-		return 20;
-	if (res_open(name, arena * 1024)) {
+	if (res_open(argv[1], arena * 1024)) {
 		report("restest: cannot open pack (or out of memory)");
 		goto out;
 	}
@@ -135,7 +124,7 @@ int amiga_main(const char *args, ULONG arglen)
 	out_num(res_get_stats()->directory);
 	out_str(" bytes;");
 	for (type = 0; type < RT_COUNT; type++) {
-		ULONG present = 0;
+		uint32_t present = 0;
 		for (idx = 0; idx < res_count(type); idx++)
 			if (res_size(type, idx))
 				present++;
@@ -149,7 +138,7 @@ int amiga_main(const char *args, ULONG arglen)
 	}
 	report("");
 
-	refs = AllocMem(nrefs * sizeof(struct ref), 0);
+	refs = plat_alloc(nrefs * sizeof(struct ref), 0);
 	if (!refs) {
 		report("restest: out of memory");
 		goto out;
@@ -165,13 +154,13 @@ int amiga_main(const char *args, ULONG arglen)
 
 	/* every resource once, in order */
 	bytes = 0;
-	t0 = ticks();
+	t0 = plat_ticks();
 	for (i = 0; i < nrefs; i++) {
 		check(refs[i].type, refs[i].idx);
 		bytes += res_size(refs[i].type, refs[i].idx);
 		res_tick();
 	}
-	report_time("sequential load+verify:", bytes, ticks() - t0);
+	report_time("sequential load+verify:", bytes, plat_ticks() - t0);
 	report_stats("sequential");
 
 	/* random accesses, locking like the interpreter does: the current room
@@ -219,7 +208,7 @@ int amiga_main(const char *args, ULONG arglen)
 		res_unlock(refs[i].type, refs[i].idx);
 		res_nuke(refs[i].type, refs[i].idx);
 	}
-	if (heap_largest_free() + 8 < (arena * 1024 & ~7UL) || res_get_stats()->used) {
+	if (heap_largest_free() + 8 < (arena * 1024 & ~(uint32_t)7) || res_get_stats()->used) {
 		errors++;
 		report("restest: heap not fully coalesced after freeing everything");
 	}
@@ -232,13 +221,13 @@ int amiga_main(const char *args, ULONG arglen)
 			maxbg = idx;
 		}
 	}
-	bgbuf = AllocMem(bgmax, MEMF_CHIP);
+	bgbuf = plat_alloc(bgmax, PLAT_CHIP);
 	if (!bgbuf) {
 		report("restest: out of chip memory for backgrounds");
 		goto out;
 	}
 	bytes = 0;
-	t0 = ticks();
+	t0 = plat_ticks();
 	for (idx = 0; idx < res_count(RT_ROOM); idx++) {
 		const struct res_bg *bg = res_room_bg(idx);
 		if (!bg)
@@ -249,7 +238,7 @@ int amiga_main(const char *args, ULONG arglen)
 			fail("bad background checksum", RT_ROOM, idx);
 		bytes += bg->size;
 	}
-	report_time("backgrounds:", bytes, ticks() - t0);
+	report_time("backgrounds:", bytes, plat_ticks() - t0);
 	out_str("restest: largest background: room ");
 	out_num(maxbg);
 	out_str(", ");
@@ -265,11 +254,8 @@ int amiga_main(const char *args, ULONG arglen)
 	}
 
 out:
-	if (bgbuf)
-		FreeMem(bgbuf, bgmax);
-	if (refs)
-		FreeMem(refs, nrefs * sizeof(struct ref));
+	plat_free(bgbuf, bgmax);
+	plat_free(refs, nrefs * sizeof(struct ref));
 	res_close();
-	CloseLibrary(DOSBase);
 	return rc;
 }

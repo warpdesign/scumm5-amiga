@@ -4,13 +4,13 @@
 #ifndef HEAP_H
 #define HEAP_H
 
-#include "amiga.h"
+#include "platform.h"
 
 /* Blocks are 8-byte aligned (AGA 4x fetch needs it for bitplane data). */
-void heap_init(void *base, ULONG size);
-void *heap_alloc(ULONG size);
+void heap_init(void *base, uint32_t size);
+void *heap_alloc(uint32_t size);
 void heap_free(void *p);
-ULONG heap_free_bytes(void);
-ULONG heap_largest_free(void);
+uint32_t heap_free_bytes(void);
+uint32_t heap_largest_free(void);
 
 #endif
