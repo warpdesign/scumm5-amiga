@@ -107,6 +107,16 @@ than a 5-bitplane design; wide rooms and the resource cache are the knobs.
   voices for music while someone talks (or forces software mixing).
 - **Streaming bandwidth.** Speech reads compete with resource loading on the
   same disk; rate, buffering and seek patterns need measuring.
+- **Cache fragmentation by locked resources.** The current room and running
+  scripts cannot be expired; in a small arena they split the free space so a
+  large load fails even though enough bytes are free (seen below ~256 KB in
+  `restest`). Compaction was tried and removed: under random access it ran on
+  half of all loads without reducing expiries. Revisit with real interpreter
+  access patterns, and with the pinned set of a real scene (visible actors'
+  costumes, playing music) measured.
+- **Room size without the background.** Demo rooms are still 30-60 KB in the
+  cache, mostly object images (OBIM, same strip codecs); converting those to
+  planar changes the figure.
 - **Atlantis specifics.** Its resource sizes and room widths may differ from
   MI2; re-check the memory budget before starting on it.
 
@@ -121,20 +131,23 @@ than a 5-bitplane design; wide rooms and the resource cache are the knobs.
 Needs the AROS m68k cross toolchain and `elf2hunk` (paths in `Makefile`,
 override `AROS_BUILD`), Python 3, and Copperline.
 
-    make                              # build/amiga/roomview + room7.pln
+    make                              # programs + build/amiga/mi2demo.s5p
     scripts/run-roomview.sh 8         # show demo room 8, LMB exits
     scripts/run-roomview.sh 7 out.png # headless screenshot
     ROOMVIEW_ARGS="0 100" scripts/run-roomview.sh 7   # hold room column 100
+    scripts/run-restest.sh [ARENA_KB [ACCESSES]]      # resource loader test
 
-Rooms wider than 320 px scroll back and forth, 1 px per frame.
+Rooms wider than 320 px scroll back and forth, 1 px per frame. `make` builds
+the resource pack from `$(DATA)/$(GAME).0*` (defaults: `scumm-data/mi2demo`,
+`MI2DEMO`) with `tools/mkpack.py`; its docstring describes the pack format.
 
 Programs are freestanding (no libc, own startup and inline OS calls in
 `src/amiga.h`), linked as relocatable ELF and converted to hunk format, so
 they run on Kickstart 3.x as well as AROS.
 
-`tools/room2planar.py DATAFILE --list` lists rooms; `--room N -o F.pln
---png F.png` converts one (rooms 2-32 are in `MI2DEMO.001`, 46-93 in
-`MI2DEMO.002`; pass `ROOM_FILE=` to make for the latter).
+`tools/room2planar.py DATAFILE --list` lists rooms; `--room N --png F.png`
+writes one background as a PNG (demo rooms 2-32 are in `MI2DEMO.001`, 46-93
+in `MI2DEMO.002`).
 
 ## Status
 
@@ -162,6 +175,29 @@ room 7 (784 px), any pixel position, checked pixel-exact at columns 0, 1, 63,
 - Two copper lists: the CPU patches 17 words (BPLCON1 + 8 plane pointers) in
   the idle one after each vblank and points COP1LC at it, so a frame is
   never changed while it is displayed. Per-frame CPU cost is negligible.
+
+Milestone 3 done: resource loader. `tools/mkpack.py` turns the index and
+data files into one pack (un-XORed, big-endian directories, per-resource
+checksums); `src/res.c` loads resources on demand into a fixed chip-RAM
+arena with ScummVM-style least-recently-used expiry, locks and an in-use
+veto for the interpreter. Notes:
+
+- A room in the pack is its ROOM block without RMIM; the background is a
+  separate planar record read straight into the playfield, so it is never
+  held twice. Sounds keep only the variant ScummVM picks for General MIDI.
+- Demo pack: 2.6 MB, of which 1.5 MB planar backgrounds; rooms 398 KB,
+  costumes 452 KB, sounds 176 KB, scripts 52 KB, charsets 16 KB. Directory
+  tables take 15 KB of RAM.
+- The demo's music exists only as ROL (MT-32) tracks, plus two AdLib-only
+  sounds: the music driver needs an MT-32 to GM program mapping.
+- The heap allocates small blocks from the bottom of the arena and large
+  ones (16 KB and up) from the top, so locked scripts do not split the room
+  space; under `restest` that cut failures at 128 KB from 37 to 5.
+- `restest` (every resource, then random accesses with the current room and
+  scripts locked, checksums throughout, then every background) passes with a
+  256 KB arena (4000 accesses) and 384 KB (20000).
+- `roomview` now reads rooms through the loader, palette from the room's
+  CLUT block.
 
 ## License and provenance
 

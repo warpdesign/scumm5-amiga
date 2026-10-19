@@ -1,7 +1,7 @@
-/* scumm5-amiga - milestone 1: show a converted room on AGA, 8 bitplanes
+/* scumm5-amiga - show a room from a resource pack on AGA, 8 bitplanes
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Usage: roomview FILE.pln [FRAMES [X]]
+ * Usage: roomview PACK ROOM [FRAMES [X]]
  * Shows the room until the left mouse button is pressed, or for FRAMES
  * frames if FRAMES is non-zero. Rooms wider than the screen scroll back and
  * forth with the hardware, or stay at column X if given.
@@ -10,13 +10,14 @@
  * and BPLCON1 delays the picture by 0-63 px. Fetch starts one 64 px block
  * early so the delayed left edge has data.
  */
-#include "amiga.h"
+#include "res.h"
+#include "util.h"
 
 APTR DOSBase;
 APTR GfxBase;
 
 #define PLANES 8
-#define HDR_SIZE (12 + 768)
+#define ARENA_SIZE (128 * 1024)
 #define SCREEN_W 320
 #define DDF_START 0x18		/* $38 minus one 64 px block */
 #define FETCH_BYTES 56		/* 4x fetch, DDF $18-$d0: 7 blocks of 64 px */
@@ -26,34 +27,6 @@ APTR GfxBase;
 #define DIW_TOP 0x2c
 
 static UWORD cl_bplpt, cl_bplcon1;	/* word index of the patched copper values */
-
-static UWORD hdr_word(const UBYTE *p) { return (UWORD)(p[0] << 8 | p[1]); }
-
-static void uae_log(const char *s)
-{
-	typedef LONG (*uaelib_fn)(LONG, const char *);
-	uaelib_fn uae = (uaelib_fn)0xf0ff60;
-	UWORD op = *(volatile UWORD *)0xf0ff60;
-	if (op == 0x4eb9 || op == 0xa00e)
-		uae(86, s);
-}
-
-static void report(const char *s)
-{
-	PutStr(s);
-	PutStr("\n");
-	uae_log(s);
-}
-
-static ULONG parse_uint(const char **pp)
-{
-	const char *p = *pp;
-	ULONG v = 0;
-	while (*p >= '0' && *p <= '9')
-		v = v * 10 + (ULONG)(*p++ - '0');
-	*pp = p;
-	return v;
-}
 
 static ULONG *move(ULONG *cl, UWORD reg, UWORD val)
 {
@@ -124,29 +97,28 @@ static void set_scroll(ULONG *cl, const UBYTE *planes, UWORD rowbytes, UWORD x)
 int amiga_main(const char *args, ULONG arglen)
 {
 	char name[108];
-	UBYTE hdr[HDR_SIZE];
 	const char *p = args;
-	ULONG frames = 0, n = 0, plane_size, alloc_size = 0;
-	UWORD width, height, room_w, rowbytes, x = 0, max_x;
+	const struct res_bg *bg;
+	const UBYTE *room, *clut;
+	ULONG frames = 0, n = 0, plane_size = 0, alloc_size = 0;
+	UWORD room_no, height, rowbytes, x = 0, max_x;
 	WORD dx = 1;
 	int fixed = 0, cur = 0;
 	UBYTE *alloc = 0, *planes;
 	ULONG *copper = 0, *cl[2];
 	APTR oldview;
-	LONG fh;
 	int rc = 20;
 
 	(void)arglen;
-	while (*p == ' ')
-		p++;
+	p = skip_spaces(p);
 	while (*p > ' ' && n < sizeof(name) - 1)
 		name[n++] = *p++;
 	name[n] = 0;
-	while (*p == ' ')
-		p++;
+	p = skip_spaces(p);
+	room_no = (UWORD)parse_uint(&p);
+	p = skip_spaces(p);
 	frames = parse_uint(&p);
-	while (*p == ' ')
-		p++;
+	p = skip_spaces(p);
 	if (*p >= '0' && *p <= '9') {
 		x = (UWORD)parse_uint(&p);
 		fixed = 1;
@@ -165,22 +137,21 @@ int amiga_main(const char *args, ULONG arglen)
 		goto out;
 	}
 
-	fh = Open(name, MODE_OLDFILE);
-	if (!fh) {
-		report("roomview: cannot open file");
+	if (res_open(name, ARENA_SIZE)) {
+		report("roomview: cannot open pack");
 		goto out;
 	}
-	if (Read(fh, hdr, HDR_SIZE) != HDR_SIZE || hdr[0] != 'P' || hdr[1] != 'L' || hdr[2] != 'N' || hdr[3] != '8') {
-		report("roomview: not a PLN8 file");
-		Close(fh);
+	room = res_get(RT_ROOM, room_no);
+	bg = res_room_bg(room_no);
+	clut = room ? res_find(TAG('C', 'L', 'U', 'T'), room) : 0;
+	if (!room || !bg || !clut) {
+		report("roomview: no such room in pack");
 		goto out;
 	}
-	width = hdr_word(hdr + 4);
-	height = hdr_word(hdr + 6);
-	room_w = hdr_word(hdr + 8);
-	rowbytes = width / 8;
-	plane_size = (ULONG)rowbytes * PLANES * height;
-	max_x = room_w > SCREEN_W ? (UWORD)(room_w - SCREEN_W) : 0;
+	height = bg->height;
+	rowbytes = bg->width / 8;
+	plane_size = bg->size;
+	max_x = bg->room_width > SCREEN_W ? (UWORD)(bg->room_width - SCREEN_W) : 0;
 	if (x > max_x)
 		x = max_x;
 
@@ -189,21 +160,18 @@ int amiga_main(const char *args, ULONG arglen)
 	copper = AllocMem(COPPER_SIZE + 4, MEMF_CHIP | MEMF_CLEAR);
 	if (!alloc || !copper) {
 		report("roomview: out of chip memory");
-		Close(fh);
 		goto out;
 	}
 	planes = alloc + PAD_FRONT;
-	if (Read(fh, planes, (LONG)plane_size) != (LONG)plane_size) {
-		report("roomview: short read");
-		Close(fh);
+	if (res_read_bg(room_no, planes)) {
+		report("roomview: cannot read background");
 		goto out;
 	}
-	Close(fh);
 
 	cl[0] = copper;
 	cl[1] = copper + CL_LONGS;
 	for (n = 0; n < 2; n++) {
-		build_copper(cl[n], rowbytes, height, hdr + 12, (UWORD *)((UBYTE *)copper + COPPER_SIZE));
+		build_copper(cl[n], rowbytes, height, clut + 8, (UWORD *)((UBYTE *)copper + COPPER_SIZE));
 		set_scroll(cl[n], planes, rowbytes, x);
 	}
 	report("roomview: room loaded, display on");
@@ -244,6 +212,7 @@ out:
 		FreeMem(copper, COPPER_SIZE + 4);
 	if (alloc)
 		FreeMem(alloc, alloc_size);
+	res_close();
 	if (GfxBase)
 		CloseLibrary(GfxBase);
 	CloseLibrary(DOSBase);

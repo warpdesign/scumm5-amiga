@@ -9,11 +9,12 @@ cd "$(dirname "$0")/.."
 
 ROOM=${1:-7}
 SHOT=$2
+PACK=${PACK:-mi2demo.s5p}
 COPPERLINE=${COPPERLINE:-/Applications/Copperline.app/Contents/MacOS/copperline}
 
-make ROOM="$ROOM" >/dev/null
+make >/dev/null
 
-set -- --model A1200 --chip 2M --fast 0 --run build/amiga/roomview --run-args "room$ROOM.pln${ROOMVIEW_ARGS:+ $ROOMVIEW_ARGS}" $COPPERLINE_ARGS
+set -- --model A1200 --chip 2M --fast 0 --run build/amiga/roomview --run-args "$PACK $ROOM${ROOMVIEW_ARGS:+ $ROOMVIEW_ARGS}" $COPPERLINE_ARGS
 if [ -n "$SHOT" ]; then
 	exec "$COPPERLINE" "$@" --noaudio --screenshot-after "${SHOT_SECS:-20}" "$SHOT"
 fi

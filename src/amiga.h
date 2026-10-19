@@ -22,6 +22,7 @@ extern APTR GfxBase;
 #define MEMF_CHIP  (1UL << 1)
 #define MEMF_CLEAR (1UL << 16)
 #define MODE_OLDFILE 1005
+#define OFFSET_BEGINNING (-1)
 
 /* struct GfxBase offsets */
 #define GFX_ACTIVIEW 34
@@ -90,6 +91,25 @@ static inline LONG Read(LONG fh, APTR buf, LONG len)
 	register APTR a6 __asm("a6") = DOSBase;
 	__asm volatile("jsr -42(%%a6)" : "=r"(d0), "+r"(d1) : "r"(d2), "r"(d3), "r"(a6) : "a0", "a1", "cc", "memory");
 	return d0;
+}
+
+static inline LONG Seek(LONG fh, LONG pos, LONG mode)
+{
+	register LONG d1 __asm("d1") = fh;
+	register LONG d2 __asm("d2") = pos;
+	register LONG d3 __asm("d3") = mode;
+	register LONG d0 __asm("d0");
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -66(%%a6)" : "=r"(d0), "+r"(d1) : "r"(d2), "r"(d3), "r"(a6) : "a0", "a1", "cc", "memory");
+	return d0;
+}
+
+/* ds[0] days, ds[1] minutes, ds[2] ticks (1/50 s) */
+static inline void DateStamp(LONG *ds)
+{
+	register LONG *d1 __asm("d1") = ds;
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -192(%%a6)" : "+r"(d1) : "r"(a6) : "d0", "a0", "a1", "cc", "memory");
 }
 
 static inline void PutStr(const char *s)

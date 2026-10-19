@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# scumm5-amiga - SCUMM v5 room background -> AGA 8-bitplane converter
+# scumm5-amiga - SCUMM v5 room background decoder (list rooms, PNG preview)
 #
 # Strip decoders adapted from ScummVM engines/scumm/gfx.cpp
 # (Gdi::drawStripBasicH/V, drawStripRaw, MajMinCodec), ScummVM commit
@@ -21,16 +21,9 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-"""Convert a SCUMM v5 room background to an interleaved 8-bitplane file.
+"""Decode SCUMM v5 room backgrounds: list rooms or write a PNG preview.
 
-Output (.pln), all big-endian:
-  char[4]  'PLN8'
-  u16      width   (padded to a multiple of 64 pixels, for AGA 4x fetch)
-  u16      height
-  u16      room width (unpadded)
-  u16      room number
-  u8[768]  palette, 8-bit R,G,B per colour
-  planes   interleaved: for each row, plane 0..7, width/8 bytes each
+The strip decoders are also used by tools/mkpack.py.
 """
 
 import argparse
@@ -39,7 +32,6 @@ import sys
 import zlib
 
 XOR_KEY = 0x69
-PAD = 64
 
 
 def load(path):
@@ -178,24 +170,6 @@ def decode_room(data, room_off):
     return width, height, palette, pixels
 
 
-def to_planar(width, height, pixels):
-    pw = (width + PAD - 1) // PAD * PAD
-    rowbytes = pw // 8
-    out = bytearray(rowbytes * 8 * height)
-    for y in range(height):
-        row = pixels[y * width:(y + 1) * width]
-        for p in range(8):
-            base = (y * 8 + p) * rowbytes
-            bit = 1 << p
-            for xb in range(width // 8):
-                v = 0
-                for i in range(8):
-                    if row[xb * 8 + i] & bit:
-                        v |= 0x80 >> i
-                out[base + xb] = v
-    return pw, out
-
-
 def write_png(path, width, height, palette, pixels):
     raw = b''.join(b'\0' + bytes(pixels[y * width:(y + 1) * width]) for y in range(height))
 
@@ -215,9 +189,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('datafile', help='SCUMM v5 data file (e.g. MI2DEMO.001)')
     ap.add_argument('--list', action='store_true', help='list rooms and sizes')
-    ap.add_argument('--room', type=int, help='room number to convert')
-    ap.add_argument('-o', '--output', help='output .pln file')
-    ap.add_argument('--png', help='also write a chunky PNG preview')
+    ap.add_argument('--room', type=int, help='room number to decode')
+    ap.add_argument('--png', help='write the background as a PNG')
     args = ap.parse_args()
 
     data = load(args.datafile)
@@ -237,12 +210,6 @@ def main():
     width, height, palette, pixels = decode_room(data, table[args.room])
     if args.png:
         write_png(args.png, width, height, palette, pixels)
-    if args.output:
-        pw, planes = to_planar(width, height, pixels)
-        with open(args.output, 'wb') as f:
-            f.write(b'PLN8' + struct.pack('>HHHH', pw, height, width, args.room))
-            f.write(bytes(palette))
-            f.write(planes)
     print('room %d: %dx%d' % (args.room, width, height))
     return 0
 
