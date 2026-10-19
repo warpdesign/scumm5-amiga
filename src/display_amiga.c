@@ -45,28 +45,40 @@ static void set_ptr(UWORD reg, const void *p)
 /* Copies bytes [b0, b1) (word aligned) of n interleaved rows (8 planes of
  * 40 bytes each) from src, whose byte b0 is at src + b0, to dst. An odd
  * source address needs an 8-bit shift: one extra leading word, kept from
- * the destination through the C channel and a zero first word mask. */
+ * the destination through the C channel and a zero first word mask. That
+ * word would overlap the end of the previous plane's line, whose D write
+ * lands after the C read, so shifted copies go one plane at a time. */
 static void blit_rows(uint8_t *dst, const uint8_t *src, int b0, int b1, int n)
 {
-	int words = (b1 - b0) / 2;
+	int words = (b1 - b0) / 2, p;
 	const uint8_t *sp = src + b0;
 	uint8_t *dp = dst + b0;
-	UWORD con0 = 0x05cc, con1 = 0, fwm = 0xffff;
 
 	if ((ULONG)sp & 1) {
-		sp -= 1;
-		dp -= 2;
 		words++;
-		con0 = 0x07ca;
-		con1 = 0x8000;
-		fwm = 0;
+		for (p = 0; p < 8; p++) {
+			wait_blit();
+			REG(0x040) = 0x07ca;
+			REG(0x042) = 0x8000;
+			REG(0x044) = 0;
+			REG(0x046) = 0xffff;
+			REG(0x074) = 0xffff;
+			REG(0x060) = (UWORD)(DISP_PITCH - words * 2);
+			REG(0x062) = (UWORD)(VS_PITCH - words * 2);
+			REG(0x066) = (UWORD)(DISP_PITCH - words * 2);
+			set_ptr(0x048, dp - 2 + p * DISP_PLANE);
+			set_ptr(0x04c, sp - 1 + p * VS_PLANE);
+			set_ptr(0x054, dp - 2 + p * DISP_PLANE);
+			REG(0x058) = (UWORD)((n & 1023) << 6 | words);
+		}
+		return;
 	}
 	while (n > 0) {
 		int rows = n > 128 ? 128 : n;
 		wait_blit();
-		REG(0x040) = con0;
-		REG(0x042) = con1;
-		REG(0x044) = fwm;
+		REG(0x040) = 0x05cc;
+		REG(0x042) = 0;
+		REG(0x044) = 0xffff;
 		REG(0x046) = 0xffff;
 		REG(0x074) = 0xffff;
 		REG(0x060) = (UWORD)(DISP_PLANE - words * 2);
