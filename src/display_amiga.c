@@ -25,6 +25,7 @@ static uint8_t pal_pending;
 static APTR oldview;
 
 static volatile ULONG vbl_count;
+static ULONG flip_vbl;
 static struct Interrupt vbl_int;
 static int vbl_rate;
 
@@ -388,13 +389,19 @@ void display_sync(void)
 	wait_blit();
 }
 
+/* The back buffer may still be on screen until the vertical blank after
+ * the last flip, and a flip must not show a buffer still being copied. */
 void display_present(void)
 {
+	if (vbl_count == flip_vbl)
+		WaitTOF();
 	copy_pending(back);
 	if (pal_pending) {
 		write_palette(copper[back]);
 		pal_pending--;
 	}
+	wait_blit();
 	*(volatile ULONG *)(CUSTOM + 0x080 / 2) = (ULONG)copper[back];
+	flip_vbl = vbl_count;
 	back ^= 1;
 }

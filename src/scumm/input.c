@@ -90,7 +90,7 @@ struct frame_event {
 
 static struct frame_event *events;
 static uint32_t num_events, next_event;
-static uint8_t loaded, active, vars_applied;
+static uint8_t loaded, active, started;
 static uint16_t prev_mbs;
 static uint8_t has_prev_mbs, pending_lup, pending_rup;
 static int16_t cur_x, cur_y;
@@ -249,12 +249,6 @@ static int sputm_debug_key(uint16_t key)
 	return 1;
 }
 
-static void apply_demo_override(void)
-{
-	g.vars[56] = 203;
-	VAR(VAR_OVERRIDE) = 1;
-}
-
 static void mouse_event(int16_t x, int16_t y, int down_left, int down_right)
 {
 	if (down_left)
@@ -270,27 +264,18 @@ void playback_pump(void)
 	const struct frame_event *fev;
 	uint16_t prev, cur;
 
-	if (loaded) {
-		if (!vars_applied && g.current_room == 3) {
-			apply_demo_override();
-			vars_applied = 1;
-		}
-		if (g.current_room == 4) {
-			if (!active) {
-				active = 1;
-				next_event = 0;
-				has_prev_mbs = 0;
-				prev_mbs = 0;
-				pending_lup = pending_rup = 0;
-				sputm_active = 0;
-				cur_x = g.mouse.x;
-				cur_y = g.mouse.y;
-			}
-			if (!vars_applied) {
-				apply_demo_override();
-				vars_applied = 1;
-			}
-		}
+	/* DOS replays the recording from the first frame; its early Escape
+	 * skips the opening cutscene, so the demo never shows room 4. */
+	if (loaded && !started) {
+		active = 1;
+		next_event = 0;
+		has_prev_mbs = 0;
+		prev_mbs = 0;
+		pending_lup = pending_rup = 0;
+		sputm_active = 0;
+		cur_x = g.mouse.x;
+		cur_y = g.mouse.y;
+		started = 1;
 	}
 
 	if (!active)
@@ -316,13 +301,8 @@ void playback_pump(void)
 	}
 	mouse_event(cur_x, cur_y, 0, 0);
 
-	if (g.current_room == 4) {
-		g.virtual_mouse.x = cur_x;
-		g.virtual_mouse.y = cur_y;
-	} else {
-		g.virtual_mouse.x = (int16_t)(cur_x + g.screen_start_strip * 8);
-		g.virtual_mouse.y = (int16_t)(cur_y + g.screen_top);
-	}
+	g.virtual_mouse.x = (int16_t)(cur_x + g.screen_start_strip * 8);
+	g.virtual_mouse.y = (int16_t)(cur_y + g.screen_top);
 
 	prev = has_prev_mbs ? prev_mbs : 0;
 	cur = fev->mbs;
@@ -336,7 +316,9 @@ void playback_pump(void)
 	}
 
 	if (fev->key != 0) {
-		if (!sputm_debug_key(fev->key))
+		if (fev->key == 27 && !sputm_active)
+			key_pressed = 27;	/* through process_input: aborts the cutscene */
+		else if (!sputm_debug_key(fev->key))
 			g.mouse_and_keyboard_stat = fev->key;
 	}
 	if (fev->key == 0)
