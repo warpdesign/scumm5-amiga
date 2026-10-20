@@ -9,9 +9,15 @@
  * envelope), and the sum maps to Paula's linear 0-64. Envelopes run at the
  * 100 Hz sequencer tick.
  *
- * A note starts one tick after it is played: a voice that was sounding is
- * stopped at once, and Paula needs time to see its DMA off before a new
- * sample can start on it.
+ * A note starts one tick after it is played. A note that takes over a
+ * sounding voice fades that voice to a quarter, stops it on the next tick
+ * and starts the tick after: Paula needs time to see its DMA off before a
+ * new sample can start on it.
+ *
+ * With 4 voices for parts that often hold 6 to 8 notes, which note gives
+ * way goes by what is heard least: release tails, then quiet notes, drums
+ * other than kick and snare, and inner notes; the highest note (the tune,
+ * mostly) and the lowest (the bass) are kept longest.
  */
 #include "platform.h"
 #include "synth.h"
@@ -46,6 +52,7 @@ struct channel {
 struct voice {
 	uint8_t state, chan, note, velocity;
 	uint8_t sustained, volume;
+	uint8_t wait;			/* pending: ticks before the note starts */
 	uint16_t period;
 	const struct zone *zone;
 	uint32_t period_root;		/* period at the root key, << 4 */
@@ -350,6 +357,8 @@ static void free_voice(int i)
 static void release_voice(struct voice *v)
 {
 	if (v->state == V_PENDING) {
+		if (v->wait > 1)
+			paula_stop((int)(v - voices));
 		v->state = V_FREE;
 		return;
 	}
@@ -363,13 +372,55 @@ static int on_side(int i, int pan)
 	return pan < 48 ? left : pan > 80 ? !left : 1;
 }
 
-/* With no voice free, the one whose loss is heard least: a releasing note,
- * then a drum hit or one note of a chord, then the quietest; a note still to
- * start only if all are. */
+/* How much a note would be missed, roughly 0-100. */
+static int32_t importance(int chan, int note, int self)
+{
+	int32_t imp;
+	int k, above = 0, below = 0;
+
+	if (chan == 9) {
+		if (note == 35 || note == 36)
+			return 50;
+		if (note == 38 || note == 40)
+			return 45;
+		if (note == 49 || note == 57)
+			return 35;
+		return 25;
+	}
+	for (k = 0; k < SYNTH_VOICES; k++) {
+		const struct voice *o = &voices[k];
+		if (k == self || o->state == V_FREE || o->state == V_RELEASE || o->chan == 9)
+			continue;
+		if (o->note > note)
+			above = 1;
+		else if (o->note < note)
+			below = 1;
+	}
+	imp = 40;
+	if (!above)
+		imp += 35;
+	else if (!below)
+		imp += 20;
+	return imp;
+}
+
+static int32_t voice_importance(int i)
+{
+	const struct voice *v = &voices[i];
+	int32_t imp = importance(v->chan, v->note, i);
+
+	if (v->state == V_PENDING)
+		return imp + 15;
+	if (v->state == V_RELEASE)
+		imp /= 4;
+	return imp - voice_cb(v) / 40;
+}
+
+/* A free voice, on the pan side first; else the voice that matters least. */
 static int pick_voice(int pan)
 {
-	int i, k, best = -1;
-	int32_t score, best_score = 0;
+	int i, best = -1;
+	int32_t imp, best_imp = 0;
 
 	for (i = 0; i < SYNTH_VOICES; i++)
 		if (voices[i].state == V_FREE && on_side(i, pan))
@@ -378,20 +429,10 @@ static int pick_voice(int pan)
 		if (voices[i].state == V_FREE)
 			return i;
 	for (i = 0; i < SYNTH_VOICES; i++) {
-		const struct voice *v = &voices[i];
-		if (v->state == V_PENDING)
-			score = -(int32_t)(age - v->age);
-		else
-			score = 10000 + voice_cb(v) + (v->state == V_RELEASE ? 4000 : 0) + (v->chan == 9 ? 300 : 0);
-		if (v->state != V_PENDING && v->state != V_RELEASE && v->chan != 9)
-			for (k = 0; k < SYNTH_VOICES; k++)
-				if (k != i && voices[k].chan == v->chan && voices[k].state > V_PENDING && voices[k].state != V_RELEASE) {
-					score += 300;
-					break;
-				}
-		if (best < 0 || score > best_score || (score == best_score && v->age < voices[best].age)) {
+		imp = voice_importance(i);
+		if (best < 0 || imp < best_imp || (imp == best_imp && voices[i].age < voices[best].age)) {
 			best = i;
-			best_score = score;
+			best_imp = imp;
 		}
 	}
 	return best;
@@ -419,8 +460,14 @@ static void note_on(int chan, int note, int velocity)
 	if (i == SYNTH_VOICES)
 		i = pick_voice(channels[chan].pan);
 	v = &voices[i];
-	if (v->state != V_FREE && v->state != V_PENDING)
-		paula_stop(i);
+	if (v->state == V_PENDING) {
+		v->wait = v->wait > 1 ? v->wait : 1;
+	} else if (v->state != V_FREE) {
+		paula_set(i, v->period, (uint8_t)(v->volume >> 2));
+		v->wait = 2;
+	} else {
+		v->wait = 1;
+	}
 	v->state = V_PENDING;
 	v->chan = (uint8_t)chan;
 	v->note = (uint8_t)note;
@@ -551,6 +598,10 @@ void synth_tick_start(void)
 
 		if (v->state != V_PENDING)
 			continue;
+		if (--v->wait) {
+			paula_stop(i);
+			continue;
+		}
 		if (!units[z->unit].data) {
 			v->state = V_FREE;
 			continue;
