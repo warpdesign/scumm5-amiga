@@ -408,6 +408,7 @@ void refresh_script_ptr(void);
 int get_script_slot(void);
 void run_script_nested(int slot);
 uint32_t rnd_get(uint32_t max);
+void rnd_skip(uint32_t n);
 
 /* ---- ops5.c ---- */
 void execute_opcode(uint8_t op);
@@ -577,7 +578,9 @@ void playback_pump(void);
 
 /* ---- engine.c ---- */
 int engine_init(const char *pack, uint32_t arena);
-void engine_boot(void);
+void engine_boot(int32_t param);
+/* Loads a saved game and finishes the frame, as the menu does; 0 if none. */
+int engine_load(int slot);
 void scumm_loop(int delta);
 void engine_frame(void);
 

@@ -188,12 +188,16 @@ struct cel_state {
 	int has_shadow_color;		/* a colour maps to 13 and the shadow palette is not the identity */
 	int min_x, max_x, min_y, max_y;
 	int draw;			/* 0: extents only */
+	int costume;
+	const uint8_t *cost_base;	/* the costume resource */
 };
 
 struct rle {
 	const uint8_t *src;
 	int x, y, skip_width, scale_x_index, scale_y_index, scale_x_step;
 	int rep_len, rep_color;
+	const uint8_t *cel;		/* first byte of the cel's data */
+	int width, col0;		/* cel width, first column drawn */
 };
 
 static void skip_cel_lines(struct rle *r, int height, int shr, int mask, int num)
@@ -476,8 +480,12 @@ struct cost_runs {
 };
 
 #define RUN_TABS 4
+/* Each table is followed by the same entries as words, colour in the low
+ * byte, length in bits 8-14, transparency in bit 15 (cost_runs_scaled). */
 static struct {
-	uint8_t tab[512], pal[32];
+	uint8_t tab[512];
+	uint16_t wtab[256];
+	uint8_t pal[32];
 	int shr;
 	uint32_t used;
 } run_tabs[RUN_TABS];
@@ -499,6 +507,7 @@ static const uint8_t *get_run_tab(const struct cel_state *st)
 		int c = b >> st->shr;
 		run_tabs[lru].tab[b] = st->palette[c];
 		run_tabs[lru].tab[256 + b] = (uint8_t)((b & st->mask) | (c && st->palette[c] != 13 ? 0 : 0x80));
+		run_tabs[lru].wtab[b] = (uint16_t)(run_tabs[lru].tab[256 + b] << 8 | run_tabs[lru].tab[b]);
 	}
 	memcpy(run_tabs[lru].pal, st->palette, 32);
 	run_tabs[lru].shr = st->shr;
@@ -625,13 +634,15 @@ static int rle_decode_fast(struct cel_state *st, struct rle *r, int height)
 }
 
 /* Scaled or vertically clipped cels: cost_runs with the output row of each
- * source row from yclip and, per column, whether x moves on (adv). The
- * first fields are those of struct cost_runs; shared with costume68k.s. */
+ * source row from yclip (times NUM_STRIPS) and, per column, whether x moves
+ * on (adv). The first fields are those of struct cost_runs; shared with
+ * costume68k.s. */
 struct cost_scaled {
 	struct cost_runs r;		/* height: plain row count */
 	const int16_t *yclip;
 	const uint8_t *adv;
 	int32_t dir;
+	const uint16_t *wtab;		/* r.tab's entries as words */
 };
 
 #ifdef __mc68000__
@@ -640,7 +651,7 @@ void cost_runs_scaled(const struct cost_scaled *a);
 /* C model of costume68k.s cost_runs_scaled */
 static void cost_runs_scaled(const struct cost_scaled *a)
 {
-	const uint8_t *src = a->r.src, *tab = a->r.tab, *adv = a->adv, *zm = a->r.zm, *cm = a->r.cm;
+	const uint8_t *src = a->r.src, *adv = a->adv, *zm = a->r.zm, *cm = a->r.cm;
 	uint8_t *sp = a->r.sp, *wp = a->r.wp;
 	int len = a->r.len, pc = a->r.pc, transparent = a->r.transparent, cy = 0;
 	int height = a->r.height, columns = a->r.columns, mode = a->r.mode;
@@ -651,9 +662,8 @@ static void cost_runs_scaled(const struct cost_scaled *a)
 			int n = len < height - cy ? len : height - cy;
 			len -= n;
 			if (!transparent) {
-				int ya = a->yclip[cy], cnt = a->yclip[cy + n] - ya;
-				uint32_t off = (uint32_t)ya * NUM_STRIPS;
-				for (; cnt > 0; cnt--, off += NUM_STRIPS) {
+				uint32_t off = (uint32_t)a->yclip[cy], end = (uint32_t)a->yclip[cy + n];
+				for (; off < end; off += NUM_STRIPS) {
 					uint8_t m = mode == 0 ? 0 : mode == 1 ? zm[off] : (uint8_t)(zm[off] | cm[off]);
 					if (!(m & maskbit)) {
 						sp[off * 8] = (uint8_t)pc;
@@ -688,10 +698,10 @@ static void cost_runs_scaled(const struct cost_scaled *a)
 			}
 		}
 		{
-			int b = *src++;
-			pc = tab[b];
-			len = tab[256 + b] & 0x7f;
-			transparent = tab[256 + b] >> 7;
+			int w = a->wtab[*src++];
+			pc = w & 0xff;
+			len = (w >> 8) & 0x7f;
+			transparent = w >> 15;
 			if (!len)
 				len = *src++;
 		}
@@ -699,7 +709,180 @@ static void cost_runs_scaled(const struct cost_scaled *a)
 }
 #endif
 
+/* Scaled cels drawn again and again (zooms, scaled actors standing still)
+ * are decoded once into pixel maps: drawing then costs the output pixels,
+ * not the runs, which wins at small scales. The result is the runs': a
+ * source row is drawn only where the output row moves on, and of the
+ * columns that land on one x the last opaque one wins. Costume data never
+ * changes, so a cel is known by its costume and offset. */
+#define CEL_POOL 24576
+#define CEL_ENTRIES 8
+#define CEL_RECENT 8
 #define MAX_SCALED_W 512
+static uint8_t cel_pool[CEL_POOL];
+static uint32_t cel_pool_used;
+static struct cel_key {
+	int costume;
+	uint32_t off;
+} cel_keys[CEL_ENTRIES], cel_recent[CEL_RECENT];
+static uint8_t *cel_pix[CEL_ENTRIES];
+static uint32_t cel_runs[CEL_ENTRIES];
+static int cel_count, cel_recent_next;
+
+static uint32_t decode_pixels(uint8_t *pix, const uint8_t *src, int w, int h, int shr, int mask)
+{
+	int c, k, len = 0, color = 0;
+	uint32_t runs = 0;
+
+	for (c = 0; c < w; c++)
+		for (k = 0; k < h; k++) {
+			if (!len) {
+				int b = *src++;
+				color = b >> shr;
+				len = b & mask;
+				if (!len)
+					len = *src++;
+				runs++;
+			}
+			pix[k * w + c] = (uint8_t)color;
+			len--;
+		}
+	return runs;
+}
+
+static int cel_pixels(const struct cel_state *st, const struct rle *r, int height)
+{
+	struct cel_key key;
+	uint32_t size = (uint32_t)r->width * (uint32_t)height;
+	int i;
+
+	key.costume = st->costume;
+	key.off = (uint32_t)(r->cel - st->cost_base);
+	for (i = 0; i < cel_count; i++)
+		if (cel_keys[i].costume == key.costume && cel_keys[i].off == key.off)
+			return i;
+	for (i = 0; i < CEL_RECENT; i++)
+		if (cel_recent[i].costume == key.costume && cel_recent[i].off == key.off)
+			break;
+	if (i == CEL_RECENT || size > CEL_POOL) {
+		cel_recent[cel_recent_next] = key;
+		cel_recent_next = (cel_recent_next + 1) % CEL_RECENT;
+		return -1;
+	}
+	if (cel_count == CEL_ENTRIES || cel_pool_used + size > CEL_POOL)
+		cel_count = cel_pool_used = 0;
+	cel_keys[cel_count] = key;
+	cel_pix[cel_count] = cel_pool + cel_pool_used;
+	cel_pool_used += (size + 3) & ~3u;
+	cel_runs[cel_count] = decode_pixels(cel_pix[cel_count], r->cel, r->width, height, st->shr, st->mask);
+	return cel_count++;
+}
+
+/* One x of the output: scratch column, mask bit and byte, and the source
+ * columns landing there (last, and how many before it). Shared with
+ * costume68k.s. */
+struct pix_group {
+	int16_t x;
+	uint8_t bit, xb;
+	int16_t last, before;
+};
+
+/* Lut entries are palette colours, 13 for transparent (13 is never drawn
+ * here: such cels take the shadow path). zm and cm are zero_row when
+ * absent, with step 0. */
+struct pix_draw {
+	const uint8_t *pix;
+	int32_t width;
+	const int16_t *yclip;
+	int32_t height;
+	const struct pix_group *groups;
+	int32_t ngroups;
+	const uint8_t *zm, *cm;
+	int32_t zstep, cstep;		/* -1: add the row offset, 0: zero_row */
+	const uint8_t *lut;
+	uint8_t *sp, *wp;
+};
+
+static const uint8_t zero_row[NUM_STRIPS];
+
+#ifdef __mc68000__
+void cel_pix_draw(const struct pix_draw *a);
+#else
+/* C model of costume68k.s cel_pix_draw */
+static void cel_pix_draw(const struct pix_draw *a)
+{
+	int k, i;
+
+	for (k = 0; k < a->height; k++) {
+		uint32_t off = (uint32_t)a->yclip[k];
+		const uint8_t *row = a->pix + (uint32_t)k * (uint32_t)a->width;
+		const uint8_t *zm = a->zm + (off & (uint32_t)a->zstep), *cm = a->cm + (off & (uint32_t)a->cstep);
+		uint8_t *sp = a->sp + off * 8, *wp = a->wp + off;
+		if (a->yclip[k + 1] == a->yclip[k])
+			continue;
+		for (i = 0; i < a->ngroups; i++) {
+			const struct pix_group *g = &a->groups[i];
+			int c, n;
+			if ((zm[g->xb] | cm[g->xb]) & g->bit)
+				continue;
+			for (c = g->last, n = g->before; n >= 0; c--, n--)
+				if (a->lut[row[c]] != 13) {
+					sp[g->x] = a->lut[row[c]];
+					wp[g->xb] |= g->bit;
+					break;
+				}
+		}
+	}
+}
+#endif
+
+static int draw_from_pixels(struct cel_state *st, const struct rle *r, int height, int columns, int rows,
+			    const int16_t *yclip, const uint8_t *adv, const uint8_t *zm, const uint8_t *cm)
+{
+	static struct pix_group groups[MAX_SCALED_W];
+	uint8_t lut[32];
+	struct pix_draw a;
+	int i, e, n = 0, x = r->x, first = 0;
+
+	if (r->width > MAX_SCALED_W)
+		return 0;
+	for (i = 0; i < columns; i++)
+		n += adv[i] || i == columns - 1;
+	/* worth a pixel map only well below full size */
+	if ((uint32_t)n * (uint32_t)rows * 4 >= (uint32_t)r->width * (uint32_t)height)
+		return 0;
+	if ((e = cel_pixels(st, r, height)) < 0 || (uint32_t)n * (uint32_t)rows >= cel_runs[e])
+		return 0;
+	n = 0;
+	for (i = 0; i < columns; i++)
+		if (adv[i] || i == columns - 1) {
+			groups[n].x = (int16_t)x;
+			groups[n].bit = (uint8_t)(0x80 >> (x & 7));
+			groups[n].xb = (uint8_t)(x >> 3);
+			groups[n].last = (int16_t)(r->col0 + i);
+			groups[n++].before = (int16_t)(i - first);
+			first = i + 1;
+			x += r->scale_x_step;
+		}
+	for (i = 0; i < 32; i++)
+		lut[i] = i && st->palette[i] != 13 ? st->palette[i] : 13;
+	a.pix = cel_pix[e];
+	a.width = r->width;
+	a.yclip = yclip;
+	a.height = height;
+	a.groups = groups;
+	a.ngroups = n;
+	a.zm = zm ? zm : zero_row;
+	a.zstep = zm ? -1 : 0;
+	a.cm = cm ? cm : zero_row;
+	a.cstep = cm ? -1 : 0;
+	a.lut = lut;
+	a.sp = scratch;
+	a.wp = scratch_wr;
+	cel_pix_draw(&a);
+	return 1;
+}
+
 static int rle_decode_scaled(struct cel_state *st, struct rle *r, int height)
 {
 	static int16_t yclip[MAX_CEL_H + 1];
@@ -707,14 +890,16 @@ static int rle_decode_scaled(struct cel_state *st, struct rle *r, int height)
 	const uint8_t *table = small_costume_scale_table;
 	const uint8_t *zmask, *cmask;
 	struct cost_scaled a;
-	int k, oy = r->y, bottom = st->out_h, x = r->x, sxi = r->scale_x_index, c, min_x, max_x;
+	int k, oy = r->y, bottom = st->out_h, x = r->x, sxi = r->scale_x_index, c, min_x, max_x, rows = 0;
 
 	if (st->shadow_mode & 0x20 || st->has_shadow_color || height <= 0 || height > MAX_CEL_H)
 		return 0;
 	if (x < 0 || x >= SCREEN_WIDTH || r->skip_width <= 0 || r->skip_width > MAX_SCALED_W)
 		return 0;
 	for (k = 0; k <= height; k++) {
-		yclip[k] = (int16_t)(oy < 0 ? 0 : oy > bottom ? bottom : oy);
+		yclip[k] = (int16_t)((oy < 0 ? 0 : oy > bottom ? bottom : oy) * NUM_STRIPS);
+		if (k && yclip[k] != yclip[k - 1])
+			rows++;
 		if (k < height && (st->scale_y == 255 || table[(r->scale_y_index + k) & 0xFF] < st->scale_y))
 			oy++;
 	}
@@ -736,6 +921,7 @@ static int rle_decode_scaled(struct cel_state *st, struct rle *r, int height)
 
 	zmask = gfx_screen_mask_buffer(0, 0, st->zbuf);
 	cmask = gfx_screen_mask_buffer(0, 0, 0);
+	if (!draw_from_pixels(st, r, height, c, rows, yclip, adv, zmask != cmask ? zmask : 0, charset_mask_used ? cmask : 0)) {
 	x = r->x;
 	a.r.src = r->src;
 	a.r.sp = scratch + x;
@@ -753,17 +939,19 @@ static int rle_decode_scaled(struct cel_state *st, struct rle *r, int height)
 	a.yclip = yclip;
 	a.adv = adv;
 	a.dir = r->scale_x_step;
+	a.wtab = (const uint16_t *)(a.r.tab + 512);
 	cost_runs_scaled(&a);
+	}
 
 	if (min_x < st->min_x)
 		st->min_x = min_x;
 	if (max_x > st->max_x)
 		st->max_x = max_x;
 	if (yclip[height] > yclip[0]) {
-		if (yclip[0] < st->min_y)
-			st->min_y = yclip[0];
-		if (yclip[height] - 1 > st->max_y)
-			st->max_y = yclip[height] - 1;
+		if (yclip[0] / NUM_STRIPS < st->min_y)
+			st->min_y = yclip[0] / NUM_STRIPS;
+		if (yclip[height] / NUM_STRIPS - 1 > st->max_y)
+			st->max_y = yclip[height] / NUM_STRIPS - 1;
 	}
 	return 1;
 }
@@ -780,7 +968,9 @@ static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, i
 	int bounds_right = SCREEN_WIDTH, bounds_bottom = st->out_h;
 	struct rle r;
 
-	r.src = src;
+	r.src = r.cel = src;
+	r.width = width;
+	r.col0 = 0;
 	r.x = st->actor_x;
 	r.y = st->actor_y;
 
@@ -874,6 +1064,7 @@ static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, i
 		if (lines_to_skip > 0) {
 			r.skip_width -= lines_to_skip;
 			skip_cel_lines(&r, height, st->shr, st->mask, lines_to_skip);
+			r.col0 = lines_to_skip;
 			r.x = 0;
 		} else {
 			lines_to_skip = right - bounds_right;
@@ -888,6 +1079,7 @@ static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, i
 		if (lines_to_skip > 0) {
 			r.skip_width -= lines_to_skip;
 			skip_cel_lines(&r, height, st->shr, st->mask, lines_to_skip);
+			r.col0 = lines_to_skip;
 			r.x = bounds_right - 1;
 		} else {
 			lines_to_skip = (0 - 1) - left;
@@ -989,6 +1181,8 @@ int costume_draw(struct actor *a)
 	st.min_x = st.min_y = 0x7fff;
 	st.max_x = st.max_y = -1;
 	st.draw = 1;
+	st.costume = a->costume;
+	st.cost_base = ptr;
 
 	if (a->force_clip)
 		st.zbuf = a->force_clip;

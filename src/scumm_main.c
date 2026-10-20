@@ -1,7 +1,7 @@
 /* scumm5-amiga - the player: runs the game on the AGA display in real time
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Usage: scumm5 [PACK [-r DEMO.REC] [-a ARENA_KB] [-n FRAMES]]
+ * Usage: scumm5 [PACK [-r DEMO.REC] [-a ARENA_KB] [-n FRAMES] [-p BOOT_PARAM] [-l SLOT]]
  * Without a pack, the launcher lists the installed games and installs more.
  * Mouse and keyboard play the game, or DEMO.REC drives it with -r (then the
  * left mouse button quits). F5 opens the game's menu (save, load, quit);
@@ -60,6 +60,8 @@ int app_main(int argc, char **argv)
 	char bank[128];
 	int music = 0;
 	uint32_t arena = 0, next, frames = 0, late = 0, max_frames = 0, busy = 0, t0, start = 0, ideal = 0, slow = 0, slow_j = 0, over = 0, chip_free = 0, worst = 0, worst_frame = 0, d;
+	int32_t boot_param = 0;
+	uint32_t load_slot = 0;
 	int n, rc = 20;
 
 	for (n = 1; n < argc; n++) {
@@ -72,6 +74,10 @@ int app_main(int argc, char **argv)
 				arena = parse_uint(&p);
 			else if (opt == 'n')
 				max_frames = parse_uint(&p);
+			else if (opt == 'l')
+				load_slot = parse_uint(&p);
+			else if (opt == 'p')
+				boot_param = *p == '-' ? (p++, -(int32_t)parse_uint(&p)) : (int32_t)parse_uint(&p);
 		} else if (!pack) {
 			pack = argv[n];
 		}
@@ -133,7 +139,9 @@ int app_main(int argc, char **argv)
 	chip_free = AvailMem(MEMF_CHIP) / 1024;
 	prof_hook = prof;
 	res_clock = display_lines;
-	engine_boot();
+	engine_boot(boot_param);
+	if (load_slot && !engine_load((int)load_slot))
+		report("scumm: no saved game in that slot");
 	start = next = display_jiffies();
 	while (!g.quit && (!rec || (CIAA_PRA & 0x40)) && (!max_frames || frames < max_frames)) {
 		int delta = VAR(VAR_TIMER_NEXT) < 1 ? 1 : VAR(VAR_TIMER_NEXT);

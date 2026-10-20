@@ -22,14 +22,13 @@ uint8_t do_effect;
  * numbers ScummVM does so later script results stay identical. */
 static void dissolve(int width, int height)
 {
-	int w = SCREEN_WIDTH / width, h = vs_h[0] / height, i;
+	int w = SCREEN_WIDTH / width, h = vs_h[0] / height;
 
 	if (SCREEN_WIDTH % width)
 		w++;
 	if (vs_h[0] % height)
 		h++;
-	for (i = 1; i < w * h; i++)
-		rnd_get((uint32_t)(i - 1));
+	rnd_skip((uint32_t)(w * h - 1));
 }
 
 void fade_in(int effect)

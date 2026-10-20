@@ -165,9 +165,9 @@ int engine_init(const char *pack, uint32_t arena)
 	return 0;
 }
 
-void engine_boot(void)
+void engine_boot(int32_t param)
 {
-	int32_t args[NUM_SCRIPT_LOCAL] = { 0 };
+	int32_t args[NUM_SCRIPT_LOCAL] = { param };
 	run_script(1, 0, 0, args);
 }
 
@@ -306,6 +306,14 @@ static void scumm_loop_rest(void)
 
 	if ((++g.frame & 0xFF) == 0)
 		res_tick();
+}
+
+int engine_load(int slot)
+{
+	if (!load_state(slot))
+		return 0;
+	scumm_loop_rest();
+	return 1;
 }
 
 void engine_frame(void)

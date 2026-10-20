@@ -19,6 +19,45 @@ uint32_t rnd_get(uint32_t max)
 	return (g.rnd_seed * 0xDEADBF03u) % (max + 1);
 }
 
+/* n calls of rnd_get whose results are not used. The seed step is linear
+ * over GF(2): jump with the step matrix squared k times, columns = images
+ * of the single bits. */
+static uint32_t rnd_jump[32][32];
+
+static uint32_t mat_apply(const uint32_t *m, uint32_t x)
+{
+	uint32_t r = 0;
+	int j;
+
+	for (j = 0; x; j++, x >>= 1)
+		if (x & 1)
+			r ^= m[j];
+	return r;
+}
+
+void rnd_skip(uint32_t n)
+{
+	uint32_t x = g.rnd_seed;
+	int j, k;
+
+	if (!rnd_jump[0][0])
+		for (j = 0; j < 32; j++) {
+			uint32_t b = 1u << j;
+			b ^= b >> 13;
+			b ^= b << 21;
+			b ^= b >> 11;
+			rnd_jump[0][j] = b;
+		}
+	for (k = 0; n; k++, n >>= 1) {
+		if (k && !rnd_jump[k][0])
+			for (j = 0; j < 32; j++)
+				rnd_jump[k][j] = mat_apply(rnd_jump[k - 1], rnd_jump[k - 1][j]);
+		if (n & 1)
+			x = mat_apply(rnd_jump[k], x);
+	}
+	g.rnd_seed = x;
+}
+
 /* ---- script pointer ---- */
 
 uint8_t *script_base(const struct script_slot *ss)

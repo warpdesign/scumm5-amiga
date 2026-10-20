@@ -7,6 +7,8 @@
  *                 [-m MIDI]    (log the MIDI messages iMUSE sends)
  *                 [-s]         (start DEMO.REC in room 4, as ScummVM does)
  *                 [-w WAV -b BANK]  (host: play the music on emulated Paula)
+ *                 [-p N]       (boot parameter: -7873 skips the FOA protection)
+ *                 [-l SLOT]    (start from a saved game)
  *                 [-k FRAME:KEYS]  (type KEYS from FRAME, one every 10 frames;
  *                                  \r is Enter, \b Backspace, \FN function
  *                                  key N, ~ a pause, #N; N pauses, @X,Y; a
@@ -105,6 +107,8 @@ int app_main(int argc, char **argv)
 	uint32_t key_frame = 0, pauses = 0;
 	uint32_t dump_first = 1, dump_every = 1, sum_every = 0, sum = 0;
 	uint32_t frames = 2000, arena = 400, i, t0, jiffies = 0, ticks = 0;
+	int32_t boot_param = 0;
+	uint32_t load_slot = 0;
 	int n;
 
 	for (n = 1; n < argc; n++) {
@@ -133,6 +137,10 @@ int app_main(int argc, char **argv)
 				wav = p;
 			else if (opt == 'b')
 				bank = p;
+			else if (opt == 'l')
+				load_slot = parse_uint(&p);
+			else if (opt == 'p')
+				boot_param = *p == '-' ? (p++, -(int32_t)parse_uint(&p)) : (int32_t)parse_uint(&p);
 			else if (opt == 'k') {
 				key_frame = parse_uint(&p);
 				keys = *p == ':' ? p + 1 : p;
@@ -185,7 +193,9 @@ int app_main(int argc, char **argv)
 		report("scummrun: no playback stream, running without it");
 
 	t0 = plat_ticks();
-	engine_boot();
+	engine_boot(boot_param);
+	if (load_slot && !engine_load((int)load_slot))
+		report("scummrun: no saved game in that slot");
 	for (i = 0; i < frames && !g.quit; i++) {
 		jiffies += VAR(VAR_TIMER_NEXT) < 1 ? 1 : VAR(VAR_TIMER_NEXT);
 		if (menu_active())

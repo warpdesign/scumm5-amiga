@@ -292,11 +292,22 @@ static uint8_t strip_mask[MAX_STRIP_H];
 /* Unpacks IFF ByteRun1 data into plane columns: n bytes per plane, rows
  * [0, rows) of each written to dst (plane 0 byte of the first row) through
  * the mask (0: plain store); the rest of each column is skipped. */
+#ifdef __mc68000__
+void unpack_columns_fast(uint8_t *dst, const uint8_t *src, int n);
+#endif
+
 static void unpack_columns(uint8_t *dst, const uint8_t *src, int planes, int n, int rows,
 			   const uint8_t *mask)
 {
 	int p = 0, y = 0, cnt, lit, fast = !mask && rows == n;
 	uint8_t *d = dst, v = 0;
+
+#ifdef __mc68000__
+	if (fast && planes == 8 && n > 0) {
+		unpack_columns_fast(dst, src, n);
+		return;
+	}
+#endif
 
 	while (p < planes) {
 		int c = (int8_t)*src++;
