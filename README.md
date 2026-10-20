@@ -5,6 +5,8 @@ games playable on a stock A1200 with just 2 MB of chip RAM.
 
 Repository: https://github.com/warpdesign/scumm5-amiga
 
+Video (Monkey Island 2 on an A1200): https://youtu.be/6JzQXt-X75E
+
 ## Requirements
 
 - AGA Amiga (68020+)
@@ -65,7 +67,7 @@ With 2 MB of chip RAM and Workbench running:
 | Program                            | 200 KB                            |
 | Display buffers and copper lists   | 135 KB                            |
 | Instrument sample pool             | 256 KB                            |
-| Resource cache                     | largest free block minus 856 KB   |
+| Resource cache                     | largest free block minus 556 KB   |
 | Room screens, masks, OS            | the rest                          |
 
 ## Building
@@ -111,8 +113,32 @@ from ScummVM to C, and replaces the rest with code written for the Amiga.
 - Support talkie versions
 - Support other SCUMM v4/v5 games
 
+## Acknowledgements
+
+- [ScummVM](https://www.scummvm.org), whose SCUMM engine is the base of this
+  interpreter.
+- The FluidR3_GM SoundFont by Frank Wen and Toby Smithe (MIT licence), the
+  source of the music instruments, from Debian's
+  [fluid-soundfont-gm](https://packages.debian.org/fluid-soundfont-gm) package.
+- [AROS](https://www.aros.org), whose m68k toolchain is used for the
+  cross-compilation.
+- [Copperline](https://copperline.dev/), the Amiga emulator used for running
+  and debugging.
+
 ## Licence
 
-GPLv3 or later (see `LICENSE`). Parts are adapted from ScummVM, which makes
-this a derivative work; those files keep ScummVM's copyright notice and name
-their source file and ScummVM commit.
+    SCUMM5 - a SCUMM v5 interpreter for AGA Amigas
+    Copyright (C) 2026 Nicolas Ramz
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
