@@ -242,7 +242,7 @@ with a null driver still times songs in real time), the Amiga input path
 
 ## License and provenance
 
-GPLv3 or later (see `COPYING`). Parts are adapted from ScummVM, making this a
+GPLv3 or later (see `LICENSE`). Parts are adapted from ScummVM, making this a
 derivative work. Adapted files keep ScummVM copyright headers and record their
 provenance (source file + ScummVM commit).
 
