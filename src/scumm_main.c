@@ -52,7 +52,7 @@ static void prof(int phase)
 }
 
 #define SYNTH_POOL_KB 256
-#define ARENA_RESERVE_KB (600 + SYNTH_POOL_KB)
+#define ARENA_RESERVE_KB (300 + SYNTH_POOL_KB)
 
 int app_main(int argc, char **argv)
 {

@@ -71,7 +71,7 @@ $(OUT)/convert.o: CFLAGS += -O2
 $(OUT)/launcher.o: CFLAGS += -Wno-volatile-register-var -I$(OUT)
 $(OUT)/launcher.o: $(OUT)/version.h
 
-VERSION ?= 0.0.1
+VERSION ?= 0.0.2
 
 # Shown by the launcher's About box; leave empty until the repository exists.
 REPO_URL ?= https://github.com/warpdesign/scumm5-amiga
