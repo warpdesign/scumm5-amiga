@@ -364,21 +364,31 @@ static void set_actor_redraw_flags(void)
 
 static void reset_actor_bgs(void)
 {
-	int i, j;
-	uint32_t u;
+	int i, j, run;
 
 	for (i = 0; i < SCREEN_WIDTH / 8; i++) {
-		int strip = g.screen_start_strip + i;
-		clear_gfx_usage_bit(strip, USAGE_BIT_DIRTY);
-		clear_gfx_usage_bit(strip, USAGE_BIT_RESTORED);
-		/* actor j is bit j - 1 of the first word (NUM_ACTORS <= 32) */
-		for (u = gfx_usage[3 * strip], j = 1; u && j < NUM_ACTORS; u >>= 1, j++)
-			if ((u & 1) &&
-			    ((g.actors[j].top != 0x7fffffff && g.actors[j].needs_redraw) || g.actors[j].need_bg_reset)) {
+		clear_gfx_usage_bit(g.screen_start_strip + i, USAGE_BIT_DIRTY);
+		clear_gfx_usage_bit(g.screen_start_strip + i, USAGE_BIT_RESTORED);
+	}
+	/* actor j is bit j - 1 of a strip's first usage word (NUM_ACTORS <= 32);
+	 * its strips in a row are restored together */
+	for (j = 1; j < NUM_ACTORS; j++) {
+		struct actor *a = &g.actors[j];
+		if (!((a->top != 0x7fffffff && a->needs_redraw) || a->need_bg_reset))
+			continue;
+		run = -1;
+		for (i = 0; i <= SCREEN_WIDTH / 8; i++) {
+			int strip = g.screen_start_strip + i;
+			if (i < SCREEN_WIDTH / 8 && (gfx_usage[3 * strip] >> (j - 1) & 1)) {
 				clear_gfx_usage_bit(strip, j);
-				if (g.actors[j].bottom - g.actors[j].top >= 0)
-					gfx_reset_background(g.actors[j].top, g.actors[j].bottom, i);
+				if (run < 0)
+					run = i;
+				continue;
 			}
+			if (run >= 0 && a->bottom - a->top >= 0)
+				gfx_reset_background_run(a->top, a->bottom, run, i);
+			run = -1;
+		}
 	}
 	display_sync();
 	for (i = 1; i < NUM_ACTORS; i++)

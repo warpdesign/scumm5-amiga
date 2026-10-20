@@ -736,6 +736,52 @@ void gfx_reset_background(int top, int bottom, int strip)
 	}
 }
 
+static int strip_has_text(int top, int bottom, int strip)
+{
+	const uint8_t *c = gfx_screen_mask_buffer(strip * 8, top, 0);
+	int y;
+
+	for (y = top; y < bottom; y++, c += NUM_STRIPS)
+		if (*c)
+			return 1;
+	return 0;
+}
+
+/* gfx_reset_background() over strips [s0, s1): the same result, with
+ * neighbouring plain strips restored in one copy. */
+void gfx_reset_background_run(int top, int bottom, int s0, int s1)
+{
+	struct vscreen *vs = &vscr[0];
+	int s, run = s0;
+
+	if (top < 0)
+		top = 0;
+	if (bottom > vs->h)
+		bottom = vs->h;
+	if (top >= bottom)
+		return;
+	if (!is_light_on()) {
+		for (s = s0; s < s1; s++)
+			gfx_reset_background(top, bottom, s);
+		return;
+	}
+	for (s = s0; s <= s1; s++) {
+		if (s < s1 && !(charset_mask_used && strip_has_text(top, bottom, s))) {
+			if (top < vs->tdirty[s])
+				vs->tdirty[s] = (int16_t)top;
+			if (bottom > vs->bdirty[s])
+				vs->bdirty[s] = (int16_t)bottom;
+			continue;
+		}
+		if (run < s)
+			display_copy_planes(vs_pixels(vs, run * 8, top) - run, vs_back_pixels(vs, run * 8, top) - run,
+					    run, s, bottom - top);
+		if (s < s1)
+			gfx_reset_background(top, bottom, s);
+		run = s + 1;
+	}
+}
+
 void gfx_copy_planes_cpu(uint8_t *dst, const uint8_t *src, int b0, int b1, int n)
 {
 	int y, p;

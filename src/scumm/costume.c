@@ -185,7 +185,7 @@ struct cel_state {
 	int shr, mask;
 	int zbuf, shadow_mode;
 	uint8_t palette[32];
-	int has_shadow_color;		/* a non-transparent colour maps to 13 */
+	int has_shadow_color;		/* a colour maps to 13 and the shadow palette is not the identity */
 	int min_x, max_x, min_y, max_y;
 	int draw;			/* 0: extents only */
 };
@@ -498,7 +498,7 @@ static const uint8_t *get_run_tab(const struct cel_state *st)
 	for (b = 0; b < 256; b++) {
 		int c = b >> st->shr;
 		run_tabs[lru].tab[b] = st->palette[c];
-		run_tabs[lru].tab[256 + b] = (uint8_t)((b & st->mask) | (c ? 0 : 0x80));
+		run_tabs[lru].tab[256 + b] = (uint8_t)((b & st->mask) | (c && st->palette[c] != 13 ? 0 : 0x80));
 	}
 	memcpy(run_tabs[lru].pal, st->palette, 32);
 	run_tabs[lru].shr = st->shr;
@@ -606,7 +606,7 @@ static int rle_decode_fast(struct cel_state *st, struct rle *r, int height)
 	a.tab = get_run_tab(st);
 	a.len = r->rep_len ? r->rep_len - 1 : 0;
 	a.pc = st->palette[r->rep_color];
-	a.transparent = r->rep_color == 0;
+	a.transparent = r->rep_color == 0 || st->palette[r->rep_color] == 13;
 	a.height = (int32_t)((uint32_t)height | (r->scale_x_step < 0 ? 0x80000000u : 0));
 	a.columns = columns;
 	a.maskbit = 0x80 >> (x & 7);
@@ -621,6 +621,150 @@ static int rle_decode_fast(struct cel_state *st, struct rle *r, int height)
 		st->min_y = y;
 	if (y + height - 1 > st->max_y)
 		st->max_y = y + height - 1;
+	return 1;
+}
+
+/* Scaled or vertically clipped cels: cost_runs with the output row of each
+ * source row from yclip and, per column, whether x moves on (adv). The
+ * first fields are those of struct cost_runs; shared with costume68k.s. */
+struct cost_scaled {
+	struct cost_runs r;		/* height: plain row count */
+	const int16_t *yclip;
+	const uint8_t *adv;
+	int32_t dir;
+};
+
+#ifdef __mc68000__
+void cost_runs_scaled(const struct cost_scaled *a);
+#else
+/* C model of costume68k.s cost_runs_scaled */
+static void cost_runs_scaled(const struct cost_scaled *a)
+{
+	const uint8_t *src = a->r.src, *tab = a->r.tab, *adv = a->adv, *zm = a->r.zm, *cm = a->r.cm;
+	uint8_t *sp = a->r.sp, *wp = a->r.wp;
+	int len = a->r.len, pc = a->r.pc, transparent = a->r.transparent, cy = 0;
+	int height = a->r.height, columns = a->r.columns, mode = a->r.mode;
+	uint8_t maskbit = (uint8_t)a->r.maskbit;
+
+	for (;;) {
+		while (len) {
+			int n = len < height - cy ? len : height - cy;
+			len -= n;
+			if (!transparent) {
+				int ya = a->yclip[cy], cnt = a->yclip[cy + n] - ya;
+				uint32_t off = (uint32_t)ya * NUM_STRIPS;
+				for (; cnt > 0; cnt--, off += NUM_STRIPS) {
+					uint8_t m = mode == 0 ? 0 : mode == 1 ? zm[off] : (uint8_t)(zm[off] | cm[off]);
+					if (!(m & maskbit)) {
+						sp[off * 8] = (uint8_t)pc;
+						wp[off] |= maskbit;
+					}
+				}
+			}
+			cy += n;
+			if (cy == height) {
+				cy = 0;
+				if (!--columns)
+					return;
+				if (*adv++) {
+					if (a->dir > 0) {
+						sp++;
+						if (maskbit == 1) {
+							maskbit = 0x80;
+							wp++, zm++, cm++;
+						} else {
+							maskbit >>= 1;
+						}
+					} else {
+						sp--;
+						if (maskbit == 0x80) {
+							maskbit = 1;
+							wp--, zm--, cm--;
+						} else {
+							maskbit <<= 1;
+						}
+					}
+				}
+			}
+		}
+		{
+			int b = *src++;
+			pc = tab[b];
+			len = tab[256 + b] & 0x7f;
+			transparent = tab[256 + b] >> 7;
+			if (!len)
+				len = *src++;
+		}
+	}
+}
+#endif
+
+#define MAX_SCALED_W 512
+static int rle_decode_scaled(struct cel_state *st, struct rle *r, int height)
+{
+	static int16_t yclip[MAX_CEL_H + 1];
+	static uint8_t adv[MAX_SCALED_W];
+	const uint8_t *table = small_costume_scale_table;
+	const uint8_t *zmask, *cmask;
+	struct cost_scaled a;
+	int k, oy = r->y, bottom = st->out_h, x = r->x, sxi = r->scale_x_index, c, min_x, max_x;
+
+	if (st->shadow_mode & 0x20 || st->has_shadow_color || height <= 0 || height > MAX_CEL_H)
+		return 0;
+	if (x < 0 || x >= SCREEN_WIDTH || r->skip_width <= 0 || r->skip_width > MAX_SCALED_W)
+		return 0;
+	for (k = 0; k <= height; k++) {
+		yclip[k] = (int16_t)(oy < 0 ? 0 : oy > bottom ? bottom : oy);
+		if (k < height && (st->scale_y == 255 || table[(r->scale_y_index + k) & 0xFF] < st->scale_y))
+			oy++;
+	}
+	min_x = max_x = x;
+	for (c = 0; c < r->skip_width;) {
+		int moves = st->scale_x == 255 || table[sxi] < st->scale_x;
+		adv[c++] = (uint8_t)moves;
+		sxi = (sxi + r->scale_x_step) & 0xFF;
+		if (moves) {
+			x += r->scale_x_step;
+			if (x < 0 || x >= SCREEN_WIDTH)
+				break;
+			if (c < r->skip_width) {
+				if (x < min_x) min_x = x;
+				if (x > max_x) max_x = x;
+			}
+		}
+	}
+
+	zmask = gfx_screen_mask_buffer(0, 0, st->zbuf);
+	cmask = gfx_screen_mask_buffer(0, 0, 0);
+	x = r->x;
+	a.r.src = r->src;
+	a.r.sp = scratch + x;
+	a.r.wp = scratch_wr + (x >> 3);
+	a.r.mode = zmask != cmask ? (charset_mask_used ? 2 : 1) : (charset_mask_used ? 1 : 0);
+	a.r.zm = (a.r.mode ? zmask : cmask) + (x >> 3);
+	a.r.cm = cmask + (x >> 3);
+	a.r.tab = get_run_tab(st);
+	a.r.len = r->rep_len ? r->rep_len - 1 : 0;
+	a.r.pc = st->palette[r->rep_color];
+	a.r.transparent = r->rep_color == 0 || st->palette[r->rep_color] == 13;
+	a.r.height = height;
+	a.r.columns = c;
+	a.r.maskbit = 0x80 >> (x & 7);
+	a.yclip = yclip;
+	a.adv = adv;
+	a.dir = r->scale_x_step;
+	cost_runs_scaled(&a);
+
+	if (min_x < st->min_x)
+		st->min_x = min_x;
+	if (max_x > st->max_x)
+		st->max_x = max_x;
+	if (yclip[height] > yclip[0]) {
+		if (yclip[0] < st->min_y)
+			st->min_y = yclip[0];
+		if (yclip[height] - 1 > st->max_y)
+			st->max_y = yclip[height] - 1;
+	}
 	return 1;
 }
 
@@ -769,7 +913,7 @@ static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, i
 	if (height + top >= 256)
 		return 2;
 
-	if (st->draw && !rle_decode_fast(st, &r, height)) {
+	if (st->draw && !rle_decode_fast(st, &r, height) && !rle_decode_scaled(st, &r, height)) {
 		if (height <= MAX_CEL_H)
 			rle_decode_runs(st, &r, height);
 		else
@@ -867,10 +1011,18 @@ int costume_draw(struct actor *a)
 		st.palette[12] = 0;
 	}
 
+	/* Colour 13 draws shadow_palette[the pixel underneath]: with the
+	 * identity palette that leaves the pixel as it is, i.e. transparent,
+	 * which the fast path's run table does. */
 	st.has_shadow_color = 0;
 	for (i = 1; i < num_colors; i++)
 		if (st.palette[i] == 13)
 			st.has_shadow_color = 1;
+	if (st.has_shadow_color) {
+		for (i = 0; i < 256 && g.shadow_palette[i] == i; i++)
+			;
+		st.has_shadow_color = i < 256;
+	}
 
 	for (limb = 0; limb < 16; limb++) {
 		const uint8_t *frameptr, *src;

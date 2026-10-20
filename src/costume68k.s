@@ -193,6 +193,140 @@ cost_done:
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
 
+| struct cost_scaled: struct cost_runs, then
+	.set	S_YCLIP, 52
+	.set	S_ADV, 56
+	.set	S_DIR, 60
+
+| registers:
+|  d0 run length left  d1 source row in the column  d2 colour (bit 31:
+|  transparent)  d3 mask bit  d4 rows this step  d5 count  d6 temp
+|  d7 row offset (y * 40)  a0 source  a1 scratch column  a2 written bits
+|  column  a3 z mask column  a4 charset mask column  a5 run table  a6 yclip
+| locals: 0(sp) columns left, 4(sp) adv, 8(sp) height, 12(sp) dir
+.macro	SCALED mode
+.Lsmain\@:
+	tst.w	%d0
+	beq	.Lsfetch\@
+.Lschunk\@:
+	move.l	8(%sp),%d4
+	sub.l	%d1,%d4
+	cmp.l	%d0,%d4
+	bls	1f
+	move.l	%d0,%d4
+1:	sub.l	%d4,%d0
+	tst.l	%d2
+	bmi	.Lsnext\@
+	moveq	#0,%d7
+	move.w	(%a6,%d1.l*2),%d7
+	move.l	%d1,%d6
+	add.l	%d4,%d6
+	move.w	(%a6,%d6.l*2),%d5
+	sub.w	%d7,%d5
+	ble	.Lsnext\@
+	mulu.w	#40,%d7
+	subq.w	#1,%d5
+2:
+.if \mode == 0
+	move.b	%d2,(%a1,%d7.w*8)
+	or.b	%d3,(%a2,%d7.w)
+.else
+	move.b	(%a3,%d7.w),%d6
+.if \mode == 2
+	or.b	(%a4,%d7.w),%d6
+.endif
+	and.b	%d3,%d6
+	bne	3f
+	move.b	%d2,(%a1,%d7.w*8)
+	or.b	%d3,(%a2,%d7.w)
+3:
+.endif
+	add.w	#40,%d7
+	dbra	%d5,2b
+.Lsnext\@:
+	add.l	%d4,%d1
+	cmp.l	8(%sp),%d1
+	bne	.Lsmain\@
+	moveq	#0,%d1
+	subq.l	#1,(%sp)
+	beq	cost_scaled_done
+	move.l	4(%sp),%d6
+	addq.l	#1,4(%sp)
+	exg	%d6,%a6
+	tst.b	(%a6)
+	exg	%d6,%a6
+	beq	.Lsmain\@
+	tst.l	12(%sp)
+	bmi	5f
+	addq.l	#1,%a1
+	ror.b	#1,%d3
+	bcc	.Lsmain\@
+	addq.l	#1,%a2
+	addq.l	#1,%a3
+	addq.l	#1,%a4
+	bra	.Lsmain\@
+5:	subq.l	#1,%a1
+	rol.b	#1,%d3
+	bcc	.Lsmain\@
+	subq.l	#1,%a2
+	subq.l	#1,%a3
+	subq.l	#1,%a4
+	bra	.Lsmain\@
+.Lsfetch\@:
+	moveq	#0,%d6
+	move.b	(%a0)+,%d6
+	moveq	#0,%d2
+	move.b	(%a5,%d6.w),%d2
+	moveq	#0,%d0
+	move.b	256(%a5,%d6.w),%d0
+	bclr	#7,%d0
+	beq	6f
+	bset	#31,%d2
+6:	tst.b	%d0
+	bne	.Lschunk\@
+	move.b	(%a0)+,%d0
+	beq	.Lsfetch\@
+	bra	.Lschunk\@
+.endm
+
+| void cost_runs_scaled(const struct cost_scaled *a)
+	.globl	cost_runs_scaled
+cost_runs_scaled:
+	movem.l	%d2-%d7/%a2-%a6,-(%sp)
+	lea	-16(%sp),%sp
+	move.l	64(%sp),%a6
+	move.l	R_COLUMNS(%a6),(%sp)
+	move.l	S_ADV(%a6),4(%sp)
+	move.l	R_HEIGHT(%a6),8(%sp)
+	move.l	S_DIR(%a6),12(%sp)
+	move.l	R_SRC(%a6),%a0
+	move.l	R_SP(%a6),%a1
+	move.l	R_WP(%a6),%a2
+	move.l	R_ZM(%a6),%a3
+	move.l	R_CM(%a6),%a4
+	move.l	R_TAB(%a6),%a5
+	move.l	R_LEN(%a6),%d0
+	move.l	R_PC(%a6),%d2
+	tst.l	R_TRANSP(%a6)
+	beq	1f
+	bset	#31,%d2
+1:	move.l	R_MASKBIT(%a6),%d3
+	move.l	R_MODE(%a6),%d7
+	moveq	#0,%d1
+	move.l	S_YCLIP(%a6),%a6
+	cmp.l	#1,%d7
+	beq	.Lsmode1
+	bhi	.Lsmode2
+	SCALED	0
+.Lsmode1:
+	SCALED	1
+.Lsmode2:
+	SCALED	2
+cost_scaled_done:
+	lea	16(%sp),%sp
+	movem.l	(%sp)+,%d2-%d7/%a2-%a6
+	rts
+
 | One 8-pixel group: chunky longs d2 (pixels 0-3), d3 (4-7) to planes,
 | 8x8 bit transpose as c2p8 in gfx.c. Leaves planes 0-3 in d3 and 4-7 in
 | d2, low byte first.

@@ -35,6 +35,7 @@ void gfx_draw_bitmap(const uint8_t *ptr, int vsn, int x, int y, int width, int h
 void gfx_redraw_bg_areas(void);
 void gfx_process_draw_queue(void);
 void gfx_reset_background(int top, int bottom, int strip);
+void gfx_reset_background_run(int top, int bottom, int s0, int s1);
 void gfx_restore_background(struct rect rect, int back_color);
 void gfx_draw_box(int x, int y, int x2, int y2, int color);
 void gfx_draw_dirty_screen_parts(void);
