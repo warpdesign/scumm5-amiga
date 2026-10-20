@@ -20,6 +20,7 @@ static APTR ciab;
 static struct Interrupt timer_int;
 static int timer_bit = -1;
 static UWORD old_intena;
+static UBYTE old_led;
 static volatile UBYTE busy, depth;
 static volatile UWORD missed;
 
@@ -131,6 +132,10 @@ int audio_open(void)
 	REG(0x09c) = 0x0780;
 	for (v = 0; v < 4; v++)
 		paula_stop(v);
+	/* no sample goes above 6 kHz; the low-pass ("LED") filter takes out
+	 * the hiss of Paula holding each sample as a step */
+	old_led = (UBYTE)(CIAA_PRA & 0x02);
+	CIAA_PRA = (UBYTE)(CIAA_PRA & ~0x02);
 
 	ciab = OpenResource("ciab.resource");
 	if (!ciab)
@@ -171,4 +176,5 @@ void audio_close(void)
 		paula_stop(v);
 	REG(0x09c) = 0x0780;
 	REG(0x09a) = (UWORD)(0x8000 | old_intena);
+	CIAA_PRA = (UBYTE)(CIAA_PRA | old_led);
 }

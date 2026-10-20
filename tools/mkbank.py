@@ -45,6 +45,7 @@ from room2planar import rooms  # noqa: E402
 
 PAULA_MAX_RATE = 28000		# PAL period 127: safely under the 1-word-per-line limit
 TICK = 0.01
+DYING_LOOP = 0.25		# loop cap (s) for notes that die away: heard quietly, if at all
 
 MT32_TO_GM = (
     0, 1, 0, 2, 4, 4, 5, 3, 16, 17, 18, 16, 16, 19, 20, 21,
@@ -312,10 +313,10 @@ def best_splice(y, ls, lo, hi, win):
     return best
 
 
-def shorten(y, ls, le, rate, args):
+def shorten(y, ls, le, rate, max_head, max_loop):
     """Caps the part before the loop and the loop itself, crossfading the
     joins; returns the new data and loop start/length."""
-    cap = int(args.max_attack * rate) & ~1
+    cap = int(max_head * rate) & ~1
     xf = max(8, int(0.01 * rate))
     if ls > cap + 2 * xf:
         head = y[:cap].copy()
@@ -323,7 +324,7 @@ def shorten(y, ls, le, rate, args):
         y = np.concatenate([head, y[ls:]])
         le -= ls - cap
         ls = cap
-    maxl = int(args.max_loop * rate) & ~1
+    maxl = int(max_loop * rate) & ~1
     if le - ls > maxl and ls >= xf:
         win = min(xf, ls)
         n = best_splice(y, ls, maxl // 2 & ~1, maxl, win)
@@ -358,7 +359,12 @@ def build_zone(sf, z, key_lo, key_hi, max_rate, max_len, used_hi, args):
         y = y[:ls + n2]
         if len(y) < ls + n2:
             y = np.concatenate([y, np.zeros(ls + n2 - len(y))])
-        y, ls, le = shorten(y, ls, ls + n2, rate, args)
+        # a note that dies away is heard in its first second or so, before the
+        # loop; one that holds is heard in its loop
+        if z.get(37, 0) >= 900:
+            y, ls, le = shorten(y, ls, ls + n2, rate, args.max_ring, DYING_LOOP)
+        else:
+            y, ls, le = shorten(y, ls, ls + n2, rate, args.max_attack, args.max_loop)
         length, loop_start, loop_length = le, ls, le - ls
     else:
         limit = int(max_len * sr)
@@ -455,41 +461,38 @@ def drum_zone(sf, key, args):
 
 
 def write_bank(path, programs, drums, per_sound, nsounds):
-    units = [('p', prog, programs[prog]) for prog in sorted(programs)] + \
-            [('d', key, [drums[key]]) for key in sorted(drums)]
-    unit_of = {(kind, n): i for i, (kind, n, _) in enumerate(units)}
+    # a unit is one sample, so programs that share samples load them once
     zones, first, count, drum_index = [], [0xFF] * 128, [0] * 128, [0xFF] * 128
-    blocks = []
-    for u, (kind, n, zs) in enumerate(units):
+    blocks, unit_of_data, units_of = [], {}, {}
+    for kind, n, zs in [('p', prog, programs[prog]) for prog in sorted(programs)] + \
+            [('d', key, [drums[key]]) for key in sorted(drums)]:
         if kind == 'p':
             first[n], count[n] = len(zones), len(zs)
         else:
             drum_index[n] = len(zones)
-        block, stored = bytearray(), {}
+        us = units_of[(kind, n)] = set()
         for z in zs:
-            off = stored.get(z.data)
-            if off is None:
-                off = stored[z.data] = len(block)
-                block += z.data
-                if len(block) & 1:
-                    block.append(0)
-            zones.append((z, u, off))
-        blocks.append(bytes(block))
+            u = unit_of_data.get(z.data)
+            if u is None:
+                u = unit_of_data[z.data] = len(blocks)
+                blocks.append(z.data + bytes(len(z.data) & 1))
+            us.add(u)
+            zones.append((z, u, 0))
     lists, table = [], []
     for sound in range(nsounds):
         progs, keys = per_sound.get(sound, ((), ()))
-        us = sorted({unit_of[('p', q)] for q in progs if ('p', q) in unit_of} |
-                    {unit_of[('d', k)] for k in keys if ('d', k) in unit_of})
+        us = sorted(set().union(*[units_of.get(('p', q), ()) for q in progs],
+                                *[units_of.get(('d', k), ()) for k in keys]))
         table.append((len(lists), len(us)))
         lists += us
     head = 12 + 384
     unit_tab = head
-    sound_tab = unit_tab + 8 * len(units)
+    sound_tab = unit_tab + 8 * len(blocks)
     zone_tab = sound_tab + 4 * nsounds
     list_tab = zone_tab + 40 * len(zones)
     data_start = list_tab + 2 * len(lists)
     data_start += -data_start & 3
-    out = bytearray(b'S5BK' + struct.pack('>HHHH', 2, len(zones), len(units), nsounds))
+    out = bytearray(b'S5BK' + struct.pack('>HHHH', 2, len(zones), len(blocks), nsounds))
     out += bytes(first) + bytes(count) + bytes(drum_index)
     off = data_start
     for blk in blocks:
@@ -526,7 +529,9 @@ def main():
     ap.add_argument('--zones', type=int, default=3, help='most zones per melodic program')
     ap.add_argument('--max-len', type=float, default=0.8, help='unlooped melodic length cap (s)')
     ap.add_argument('--max-attack', type=float, default=0.15, help='cap on the part before a loop (s)')
-    ap.add_argument('--max-loop', type=float, default=0.25, help='loop length cap (s)')
+    ap.add_argument('--max-loop', type=float, default=1.0, help='loop length cap (s)')
+    ap.add_argument('--max-ring', type=float, default=1.5,
+                    help='cap on the part before a loop for notes that die away (s)')
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args()
 

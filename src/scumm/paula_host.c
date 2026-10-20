@@ -4,7 +4,8 @@
  * Each voice plays its current block once, then the latched loop block
  * again and again, holding each 8-bit sample for its period like Paula.
  * Voices 0 and 3 go left, 1 and 2 right (and so on in fours for a host
- * build with more voices). No output filter.
+ * build with more voices). The output goes through the A1200's "LED"
+ * low-pass filter, which the game engages: 2-pole Butterworth at 3275 Hz.
  */
 #include "platform.h"
 #include "synth.h"
@@ -23,6 +24,9 @@ struct pvoice {
 
 static struct pvoice pv[SYNTH_VOICES];
 static plat_file wav;
+/* bilinear transform at RATE */
+static const float led_b0 = 0.0405511f, led_b1 = 2 * 0.0405511f, led_a1 = -1.3551322f, led_a2 = 0.5173367f;
+static float led_z[2][2];
 static uint32_t frames, clock_hz;
 
 static void put32(uint8_t *p, uint32_t v)
@@ -52,6 +56,7 @@ int paula_host_open(const char *path, uint32_t clock)
 		return -1;
 	clock_hz = clock;
 	frames = 0;
+	memset(led_z, 0, sizeof(led_z));
 	header();
 	return 0;
 }
@@ -121,8 +126,15 @@ void paula_host_tick(void)
 				p->left--;
 			}
 		}
-		buf[i * 2] = (int16_t)(mix[0] * 2);
-		buf[i * 2 + 1] = (int16_t)(mix[1] * 2);
+		for (v = 0; v < 2; v++) {
+			/* transposed direct form II; b2 = b0 */
+			float x = (float)mix[v], y = led_b0 * x + led_z[v][0];
+			int32_t m;
+			led_z[v][0] = led_b1 * x - led_a1 * y + led_z[v][1];
+			led_z[v][1] = led_b0 * x - led_a2 * y;
+			m = (int32_t)(y * 2);
+			buf[i * 2 + v] = (int16_t)(m > 32767 ? 32767 : m < -32768 ? -32768 : m);
+		}
 	}
 	plat_write(wav, buf, sizeof(buf));
 	frames += RATE / 100;
