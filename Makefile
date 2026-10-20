@@ -71,6 +71,8 @@ $(OUT)/convert.o: CFLAGS += -O2
 $(OUT)/launcher.o: CFLAGS += -Wno-volatile-register-var -I$(OUT)
 $(OUT)/launcher.o: $(OUT)/version.h
 
+VERSION ?= 0.0.1
+
 # Shown by the launcher's About box; leave empty until the repository exists.
 REPO_URL ?= https://github.com/warpdesign/scumm5-amiga
 
@@ -78,7 +80,7 @@ REPO_URL ?= https://github.com/warpdesign/scumm5-amiga
 # rebuilt at every make. "+" after the hash: built with uncommitted changes.
 $(OUT)/version.h: FORCE | $(OUT)
 	@v=$$(git describe --always --dirty=+ 2>/dev/null || echo unknown); \
-	printf '#define SCUMM5_VERSION "%s, %s"\n#define SCUMM5_REPO "%s"\n' "$$v" "$$(date +%Y-%m-%d)" "$(REPO_URL)" > $@.tmp; \
+	printf '#define SCUMM5_VERSION "%s (%s, %s)"\n#define SCUMM5_REPO "%s"\n' "$(VERSION)" "$$v" "$$(date +%Y-%m-%d)" "$(REPO_URL)" > $@.tmp; \
 	cmp -s $@.tmp $@ || mv $@.tmp $@; rm -f $@.tmp
 
 .PHONY: FORCE

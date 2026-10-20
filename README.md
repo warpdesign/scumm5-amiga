@@ -1,7 +1,7 @@
 # scumm5-amiga
 
-A SCUMM v5 interpreter for an unexpanded Amiga A1200 (68EC020 at 14 MHz,
-2 MB chip RAM, no fast RAM), adapted from ScummVM.
+A SCUMM v5 interpreter for AGA Amigas, adapted from ScummVM. It runs on an
+unexpanded A1200 (68EC020 at 14 MHz, 2 MB chip RAM, no fast RAM).
 
 Repository: https://github.com/warpdesign/scumm5-amiga
 

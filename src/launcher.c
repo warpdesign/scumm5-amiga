@@ -135,10 +135,10 @@ static void about(void)
 	args[0] = (ULONG)SCUMM5_VERSION;
 	args[1] = (ULONG)SCUMM5_REPO;
 	tell(SCUMM5_REPO[0]
-	     ? TITLE " for the Amiga A1200\nVersion %s\n\n"
+	     ? TITLE " for AGA Amigas\nVersion %s\n\n"
 	       "A SCUMM v5 interpreter adapted from ScummVM.\n"
 	       "Free software under the GNU GPL, version 3 or later.\n\n%s"
-	     : TITLE " for the Amiga A1200\nVersion %s\n\n"
+	     : TITLE " for AGA Amigas\nVersion %s\n\n"
 	       "A SCUMM v5 interpreter adapted from ScummVM.\n"
 	       "Free software under the GNU GPL, version 3 or later.", args);
 }
