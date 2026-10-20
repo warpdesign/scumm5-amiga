@@ -11,6 +11,7 @@
  */
 #include "scumm.h"
 #include "gfx.h"
+#include "saveload.h"
 
 #define LIGHTMODE_ACTOR_USE_BASE_PALETTE 1
 #define LIGHTMODE_ROOM_LIGHTS_ON 2
@@ -154,6 +155,7 @@ int engine_init(const char *pack, uint32_t arena)
 {
 	if (res_open(pack, arena))
 		return -1;
+	saveload_set_base(pack);
 	res_in_use = resource_in_use;
 	sound_init();
 	g.rnd_seed = 1;
@@ -186,7 +188,7 @@ static const uint16_t cursor_images[4][16] = {
 };
 static const uint8_t cursor_hotspots[4][2] = { { 8, 7 }, { 8, 7 }, { 1, 1 }, { 5, 0 } };
 static const uint8_t cursor_colors[4] = { 15, 15, 7, 8 };
-static uint8_t cursor_anim, cursor_color = 15;
+uint8_t cursor_anim, cursor_color = 15;
 
 static void update_cursor(void)
 {
@@ -213,10 +215,11 @@ static void draw_screen(void)
 	PROF(8);
 }
 
+static int old_ego;
+static void scumm_loop_rest(void);
+
 void scumm_loop(int delta)
 {
-	int old_ego;
-
 	VAR(VAR_TIMER) = delta;
 	VAR(VAR_TIMER_TOTAL) += delta;
 	VAR(VAR_TMR_1) += delta;
@@ -236,7 +239,16 @@ void scumm_loop(int delta)
 
 	PROF(0);
 	process_input();
+	if (menu_active()) {
+		draw_screen();
+		return;
+	}
+	scumm_loop_rest();
+}
 
+/* The frame after the input: the menu holds it until it closes. */
+static void scumm_loop_rest(void)
+{
 	playback_pump();
 	VAR(VAR_CAMERA_POS_X) = g.camera.cur.x;
 	VAR(VAR_HAVE_MSG) = g.have_msg;
@@ -299,6 +311,17 @@ void scumm_loop(int delta)
 void engine_frame(void)
 {
 	int delta = VAR(VAR_TIMER_NEXT);
+
+	if (menu_active()) {
+		menu_frame(delta < 1 ? 1 : delta);
+		if (g.quit)
+			return;
+		if (menu_active())
+			draw_screen();
+		else
+			scumm_loop_rest();
+		return;
+	}
 	if (delta < 1)
 		delta = 1;
 	scumm_loop(delta);

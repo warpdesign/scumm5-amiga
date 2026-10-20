@@ -9,6 +9,7 @@
  * ScummVM source.
  */
 #include "scumm.h"
+#include "saveload.h"
 
 #define MBS_LEFT_CLICK 0x8000
 #define MBS_RIGHT_CLICK 0x4000
@@ -45,6 +46,23 @@ void input_mouse(int x, int y, int left_clicks, int left_down, int right_clicks,
 		g.right_btn_pressed |= MS_CLICKED | MS_DOWN;
 	if (!right_down)
 		g.right_btn_pressed &= (uint8_t)~MS_DOWN;
+}
+
+int input_take_key(void)
+{
+	int k = key_pressed;
+
+	key_pressed = 0;
+	return k;
+}
+
+int input_take_click(void)
+{
+	int b = g.left_btn_pressed & MS_CLICKED ? 1 : g.right_btn_pressed & MS_CLICKED ? 2 : 0;
+
+	g.left_btn_pressed &= (uint8_t)~MS_CLICKED;
+	g.right_btn_pressed &= (uint8_t)~MS_CLICKED;
+	return b;
 }
 
 void clear_clicked_status(void)
@@ -93,6 +111,10 @@ void process_input(void)
 	if (!last_key)
 		return;
 
+	if (VAR(VAR_MAINMENU_KEY) && last_key == VAR(VAR_MAINMENU_KEY)) {
+		menu_open();
+		return;
+	}
 	if (VAR(VAR_TALKSTOP_KEY) && last_key == '.') {
 		g.talk_delay = 0;
 	} else if (VAR(VAR_CUTSCENEEXIT_KEY) && last_key == 27) {

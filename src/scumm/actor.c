@@ -9,6 +9,7 @@
  */
 #include "scumm.h"
 #include "gfx.h"
+#include "saveload.h"
 
 #define CHORE_REDIRECT_INIT 56
 #define CHORE_REDIRECT_WALK 57
@@ -294,6 +295,11 @@ static void animate_costume(struct actor *a)
 
 #define NUM_USAGE_STRIPS 201
 static uint32_t gfx_usage[NUM_USAGE_STRIPS * 3];
+
+void actor_usage_sync(struct ser *s)
+{
+	SVA(s, gfx_usage);
+}
 
 void set_gfx_usage_bit(int strip, int bit)
 {

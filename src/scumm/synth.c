@@ -688,3 +688,12 @@ void synth_tick_end(void)
 		}
 	}
 }
+
+void synth_mute(int on)
+{
+	int i;
+
+	for (i = 0; i < SYNTH_VOICES; i++)
+		if (voices[i].state > V_PENDING)
+			paula_set(i, voices[i].period, on ? 0 : voices[i].volume);
+}

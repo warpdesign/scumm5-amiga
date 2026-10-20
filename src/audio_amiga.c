@@ -21,7 +21,7 @@ static struct Interrupt timer_int;
 static int timer_bit = -1;
 static UWORD old_intena;
 static UBYTE old_led;
-static volatile UBYTE busy, depth;
+static volatile UBYTE busy, depth, paused;
 static volatile UWORD missed;
 
 uint32_t display_lines(void);
@@ -29,8 +29,11 @@ uint32_t audio_ticks, audio_lines_imuse, audio_lines_synth;
 
 static void tick(void)
 {
-	uint32_t t0 = display_lines(), t1, t2;
+	uint32_t t0, t1, t2;
 
+	if (paused)
+		return;
+	t0 = display_lines();
 	synth_tick_start();
 	t1 = display_lines();
 	imuse_timer();
@@ -75,6 +78,14 @@ void audio_unlock(void)
 		while (m--)
 			tick();
 	}
+}
+
+void audio_pause(int on)
+{
+	audio_lock();
+	paused = (UBYTE)on;
+	synth_mute(on);
+	audio_unlock();
 }
 
 void paula_stop(int v)

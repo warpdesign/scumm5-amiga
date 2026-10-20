@@ -569,6 +569,9 @@ extern uint8_t playback_like_scummvm;
 void input_key(int key);
 void input_click(int x, int y);
 void input_mouse(int x, int y, int left_clicks, int left_down, int right_clicks, int right_down);
+/* For the menu: the key typed and the button clicked (1 left, 2 right) since last asked. */
+int input_take_key(void);
+int input_take_click(void);
 int playback_open(const char *path);
 void playback_pump(void);
 

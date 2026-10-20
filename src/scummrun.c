@@ -8,7 +8,9 @@
  *                 [-s]         (start DEMO.REC in room 4, as ScummVM does)
  *                 [-w WAV -b BANK]  (host: play the music on emulated Paula)
  *                 [-k FRAME:KEYS]  (type KEYS from FRAME, one every 10 frames;
- *                                  \r is Enter, ~ a pause, @X,Y; a left click)
+ *                                  \r is Enter, \b Backspace, \FN function
+ *                                  key N, ~ a pause, #N; N pauses, @X,Y; a
+ *                                  left click)
  * Boots the game and runs FRAMES main-loop iterations (default 2000)
  * without display or sound, optionally writing a ScummVM-format trace.
  * iMUSE runs on the game clock: before each frame, one tick for every
@@ -18,6 +20,7 @@
 #include "scumm/scumm.h"
 #include "scumm/gfx.h"
 #include "scumm/imuse.h"
+#include "scumm/saveload.h"
 #include "util.h"
 
 #ifndef AMIGA
@@ -99,7 +102,7 @@ void display_host_dump(const char *dir, uint32_t first, uint32_t every);
 int app_main(int argc, char **argv)
 {
 	const char *p, *pack = 0, *trace = 0, *rec = 0, *dump = 0, *midi = 0, *keys = 0, *wav = 0, *bank = 0;
-	uint32_t key_frame = 0;
+	uint32_t key_frame = 0, pauses = 0;
 	uint32_t dump_first = 1, dump_every = 1, sum_every = 0, sum = 0;
 	uint32_t frames = 2000, arena = 400, i, t0, jiffies = 0, ticks = 0;
 	int n;
@@ -185,17 +188,32 @@ int app_main(int argc, char **argv)
 	engine_boot();
 	for (i = 0; i < frames && !g.quit; i++) {
 		jiffies += VAR(VAR_TIMER_NEXT) < 1 ? 1 : VAR(VAR_TIMER_NEXT);
+		if (menu_active())
+			ticks = jiffies * 5 / 3;	/* the music stands still */
 		for (; ticks < jiffies * 5 / 3; ticks++) {
 			midi_ms = ticks * 10;
 			music_tick();
 		}
 		midi_ms = ticks * 10;
-		if (keys && *keys && i >= key_frame && (i - key_frame) % 10 == 0) {
+		if (keys && *keys && i >= key_frame && (i - key_frame) % 10 == 0 && pauses) {
+			pauses--;
+		} else if (keys && *keys && i >= key_frame && (i - key_frame) % 10 == 0) {
 			if (keys[0] == '\\' && keys[1] == 'r') {
 				input_key(13);
 				keys += 2;
+			} else if (keys[0] == '\\' && keys[1] == 'b') {
+				input_key(8);
+				keys += 2;
+			} else if (keys[0] == '\\' && keys[1] == 'F') {
+				keys += 2;
+				input_key((int)(314 + parse_uint(&keys)));
 			} else if (*keys == '~') {
 				keys++;
+			} else if (*keys == '#') {
+				keys++;
+				pauses = parse_uint(&keys);
+				keys += *keys == ';';
+				pauses -= pauses > 0;
 			} else if (*keys == '@') {
 				uint32_t x, y;
 				keys++;

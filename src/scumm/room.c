@@ -11,6 +11,7 @@
  */
 #include "scumm.h"
 #include "gfx.h"
+#include "saveload.h"
 
 extern int16_t vs_h[3];
 
@@ -353,4 +354,15 @@ void start_scene(int room, struct actor *a, int object_nr)
 	}
 
 	do_effect = 1;
+}
+
+/* The room data a loaded game needs that is not in the saved game. */
+void room_after_load(void)
+{
+	if (g.current_room == 0) {
+		g.encd_offs = g.excd_offs = 0;
+		return;
+	}
+	setup_room_sub_blocks();
+	gfx_room_changed();
 }

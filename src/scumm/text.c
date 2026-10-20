@@ -12,6 +12,7 @@
  */
 #include "scumm.h"
 #include "gfx.h"
+#include "saveload.h"
 
 /* virtual screens: 0 main, 1 text, 2 verb */
 int16_t vs_topline[3], vs_h[3];
@@ -1049,4 +1050,83 @@ void redefine_builtin_cursor_hotspot(int idx, int x, int y)
 	(void)idx;
 	(void)x;
 	(void)y;
+}
+
+/* ---- saved games and the menu ---- */
+
+void text_sync(struct ser *s)
+{
+	SV(s, cs.top);
+	SV(s, cs.left);
+	SV(s, cs.start_left);
+	SV(s, cs.right);
+	SV(s, cs.center);
+	SV(s, cs.color);
+	SV(s, cs.disable_offs_x);
+	SV(s, cs.first_char);
+	SV(s, cs.text_screen_id);
+	SV(s, cs.cur_id);
+	SV(s, cs.str.left);
+	SV(s, cs.str.top);
+	SV(s, cs.str.right);
+	SV(s, cs.str.bottom);
+	SV(s, next_left);
+	SV(s, next_top);
+	SV(s, msg_count);
+	SV(s, charset_color);
+	SV(s, use_talk_anims);
+}
+
+/* The screens were cleared: no text is left under the charset mask. */
+void text_after_load(void)
+{
+	charset_has_mask = 0;
+	mask_y0 = 0x7FFF;
+	mask_y1 = -1;
+	if (cs.cur_id > 0)
+		set_cur_id(cs.cur_id);
+}
+
+void gui_text(const char *msg, int x, int y, int right, int color, int center)
+{
+	struct charset_state save = cs;
+	struct string_tab_part st = g.string[5].cur;
+	int16_t nl = next_left, nt = next_top;
+	uint8_t map[16];
+
+	memcpy(map, g.charset_color_map, sizeof(map));
+	g.string[5].cur.xpos = (int16_t)x;
+	g.string[5].cur.ypos = (int16_t)y;
+	g.string[5].cur.right = (int16_t)right;
+	g.string[5].cur.center = (uint8_t)center;
+	g.string[5].cur.color = (uint8_t)color;
+	g.string[5].cur.charset = 1;
+	draw_string(5, (const uint8_t *)msg);
+	g.string[5].cur = st;
+	cs = save;
+	next_left = nl;
+	next_top = nt;
+	memcpy(g.charset_color_map, map, sizeof(map));
+}
+
+int gui_text_width(const char *msg)
+{
+	struct charset_state save = cs;
+	int w;
+
+	set_cur_id(1);
+	w = string_width(0, (const uint8_t *)msg);
+	cs = save;
+	return w;
+}
+
+int gui_font_height(void)
+{
+	struct charset_state save = cs;
+	int h;
+
+	set_cur_id(1);
+	h = font_height();
+	cs = save;
+	return h;
 }

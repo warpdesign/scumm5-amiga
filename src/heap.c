@@ -79,6 +79,11 @@ void heap_free(void *p)
 	}
 }
 
+uint32_t heap_block_size(const void *p)
+{
+	return ((const struct hblk *)((const uint8_t *)p - HDR))->size - HDR;
+}
+
 uint32_t heap_free_bytes(void)
 {
 	struct hblk *b;

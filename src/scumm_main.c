@@ -3,8 +3,10 @@
  *
  * Usage: scumm5 PACK [-r DEMO.REC] [-a ARENA_KB] [-n FRAMES]
  * Mouse and keyboard play the game, or DEMO.REC drives it with -r (then the
- * left mouse button quits). Ctrl-C or Alt-X quits. Music plays if the
- * instrument bank (PACK with .s5b instead of .s5p) is next to the pack.
+ * left mouse button quits). F5 opens the game's menu (save, load, quit);
+ * games are saved next to the pack, as monkey2.s01 to .s99 for monkey2.s5p.
+ * Ctrl-C or Alt-X quits. Music plays if the instrument bank (PACK with .s5b
+ * instead of .s5p) is next to the pack.
  */
 #include "amiga.h"
 #include "scumm/scumm.h"

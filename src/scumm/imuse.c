@@ -13,6 +13,7 @@
  */
 #include "scumm.h"
 #include "imuse.h"
+#include "saveload.h"
 
 #define TICKS_PER_BEAT 480
 #define NUM_PLAYERS 8
@@ -2644,4 +2645,253 @@ void imuse_timer(void)
 	for (i = 0; i < NUM_PLAYERS; i++)
 		if (players[i].active)
 			player_on_timer(&players[i]);
+}
+
+/* ---- saved games ----
+ *
+ * The whole sequencer state, with the parser's positions as offsets into
+ * the sound data, so a loaded game's music carries on from the same event.
+ * ScummVM keeps the tick and seeks to it instead (IMuseInternal::
+ * saveLoadIMuse, Player::fixAfterLoad); the rest follows it. */
+
+#define NO_OFFSET 0xFFFFFFFF
+
+static void sync_ptr(struct ser *s, const uint8_t **p, const uint8_t *base)
+{
+	uint32_t o = s->saving && *p && base ? (uint32_t)(*p - base) : NO_OFFSET;
+
+	SV(s, o);
+	if (!s->saving)
+		*p = o == NO_OFFSET || !base ? 0 : base + o;
+}
+
+static void sync_parser(struct ser *s, struct parser *ps, const uint8_t *base)
+{
+	struct event *e = &ps->next;
+	int i;
+
+	for (i = 0; i < MAX_TRACKS; i++)
+		sync_ptr(s, &ps->tracks[i], base);
+	SV(s, ps->num_tracks);
+	SV(s, ps->active_track);
+	SV(s, ps->abort_parse);
+	SV(s, ps->jumping);
+	SV(s, ps->has_driver);
+	SV(s, ps->hanging_count);
+	SV(s, ps->ppqn);
+	SV(s, ps->tempo);
+	SV(s, ps->psec_per_tick);
+	SV(s, ps->timer_rate);
+	SV(s, ps->sysex_delay);
+	sync_ptr(s, &ps->pos.play_pos, base);
+	SV(s, ps->pos.play_time);
+	SV(s, ps->pos.play_tick);
+	SV(s, ps->pos.last_event_time);
+	SV(s, ps->pos.last_event_tick);
+	SV(s, ps->pos.running_status);
+	sync_ptr(s, &e->start, base);
+	SV(s, e->delta);
+	SV(s, e->event);
+	SV(s, e->param1);
+	SV(s, e->param2);
+	SV(s, e->type);
+	SV(s, e->length);
+	sync_ptr(s, &e->data, base);
+	SVA(s, ps->active_notes);
+	for (i = 0; i < NUM_HANGING; i++) {
+		SV(s, ps->hanging[i].channel);
+		SV(s, ps->hanging[i].note);
+		SV(s, ps->hanging[i].time_left);
+	}
+}
+
+static void sync_part_ptr(struct ser *s, struct part **p)
+{
+	uint16_t n = s->saving && *p ? (uint16_t)(*p - parts + 1) : 0;
+
+	SV(s, n);
+	if (!s->saving)
+		*p = n && n <= NUM_PARTS ? &parts[n - 1] : 0;
+}
+
+static void sync_player(struct ser *s, struct player *pl)
+{
+	struct hook *h = &pl->hook;
+	uint8_t has_parser = pl->active && pl->has_parser;
+	int i;
+
+	sync_part_ptr(s, &pl->parts);
+	SV(s, pl->active);
+	SV(s, pl->scanning);
+	SV(s, pl->id);
+	SV(s, pl->priority);
+	SV(s, pl->volume);
+	SV(s, pl->pan);
+	SV(s, pl->transpose);
+	SV(s, pl->detune);
+	SV(s, pl->note_offset);
+	SV(s, pl->vol_eff);
+	SV(s, pl->track_index);
+	SV(s, pl->loop_to_beat);
+	SV(s, pl->loop_from_beat);
+	SV(s, pl->loop_counter);
+	SV(s, pl->loop_to_tick);
+	SV(s, pl->loop_from_tick);
+	SV(s, pl->speed);
+	SV(s, pl->transition_timer);
+	SVA(s, h->jump);
+	SV(s, h->transpose);
+	SVA(s, h->part_onoff);
+	SVA(s, h->part_volume);
+	SVA(s, h->part_program);
+	SVA(s, h->part_transpose);
+	for (i = 0; i < 4; i++) {
+		struct fader *f = &pl->faders[i];
+		SV(s, f->param);
+		SV(s, f->dir);
+		SV(s, f->incr);
+		SV(s, f->ifrac);
+		SV(s, f->irem);
+		SV(s, f->ttime);
+		SV(s, f->cntdwn);
+		SV(s, f->state);
+	}
+	SV(s, pl->is_midi);
+	SV(s, pl->is_mt32);
+	SV(s, pl->supports_percussion);
+	SV(s, pl->vol_chan);
+	SV(s, has_parser);
+	if (!s->saving) {
+		pl->has_parser = has_parser;
+		if (has_parser)
+			parser_init(&pl->parser);
+	}
+	if (has_parser)
+		sync_parser(s, &pl->parser, sound_data(pl->id));
+}
+
+static void sync_part(struct ser *s, struct part *p)
+{
+	uint16_t n;
+
+	sync_part_ptr(s, &p->next);
+	sync_part_ptr(s, &p->prev);
+	n = s->saving && p->player ? (uint16_t)(p->player - players + 1) : 0;
+	SV(s, n);
+	if (!s->saving)
+		p->player = n && n <= NUM_PLAYERS ? &players[n - 1] : 0;
+	n = s->saving && p->mc ? (uint16_t)(p->mc - channels + 1) : 0;
+	SV(s, n);
+	if (!s->saving)
+		p->mc = n && n <= NUM_CHANNELS ? &channels[n - 1] : 0;
+	SV(s, p->pitchbend);
+	SV(s, p->pitchbend_factor);
+	SV(s, p->transpose);
+	SV(s, p->transpose_eff);
+	SV(s, p->vol);
+	SV(s, p->vol_eff);
+	SV(s, p->detune);
+	SV(s, p->detune_eff);
+	SV(s, p->pan);
+	SV(s, p->pan_eff);
+	SV(s, p->polyphony);
+	SV(s, p->on);
+	SV(s, p->modwheel);
+	SV(s, p->pedal);
+	SV(s, p->pri);
+	SV(s, p->pri_eff);
+	SV(s, p->chan);
+	SV(s, p->effect_level);
+	SV(s, p->chorus);
+	SV(s, p->percussion);
+	SV(s, p->bank);
+	SV(s, p->instrument.type);
+	SV(s, p->instrument.program);
+	SV(s, p->instrument.bank);
+	SV(s, p->instrument.mt32);
+	SV(s, p->unassigned_instrument);
+}
+
+void imuse_sync(struct ser *s)
+{
+	uint16_t ids[NUM_PLAYERS], n;
+	uint8_t was_locked[NUM_PLAYERS];
+	int i;
+
+	/* the sounds playing come back from the pack first, held in memory
+	 * until their players say they are in use */
+	for (i = 0; i < NUM_PLAYERS; i++) {
+		ids[i] = players[i].active ? (uint16_t)players[i].id : 0;
+		SV(s, ids[i]);
+		was_locked[i] = 1;
+		if (!s->saving && ids[i] && ids[i] < res_count(RT_SOUND)) {
+			was_locked[i] = (uint8_t)res_locked(RT_SOUND, ids[i]);
+			res_lock(RT_SOUND, ids[i]);
+			res_get(RT_SOUND, ids[i]);
+		}
+	}
+
+	audio_lock();
+	if (!s->saving) {
+		stop_all();
+		drv_open();
+	}
+	SV(s, queue_end);
+	SV(s, queue_pos);
+	SV(s, queue_sound);
+	SV(s, queue_adding);
+	SV(s, queue_marker);
+	SV(s, queue_cleared);
+	SV(s, trigger_count);
+	SV(s, master_volume);
+	SV(s, music_volume_eff);
+	SVA(s, channel_volume);
+	SVA(s, channel_volume_eff);
+	SVA(s, volchan_table);
+	ser_ints(s, cmd_queue, 2, NUM_QUEUE * 8);
+	for (i = 0; i < NUM_DEFERRED; i++) {
+		struct deferred *d = &deferred[i];
+		SV(s, d->time_left);
+		SV(s, d->a);
+		SV(s, d->b);
+		SV(s, d->c);
+		SV(s, d->d);
+		SV(s, d->e);
+		SV(s, d->f);
+	}
+	SVA(s, active_notes);
+	for (i = 0; i < NUM_CHANNELS; i++) {
+		struct channel *c = &channels[i];
+		SV(s, c->allocated);
+		SV(s, c->transpose);
+		SV(s, c->pb_sensitivity);
+		SV(s, c->prio);
+		SV(s, c->detune);
+		SV(s, c->pitch_bend_temp);
+	}
+	for (i = 0; i < NUM_PLAYERS; i++)
+		sync_player(s, &players[i]);
+	for (i = 0; i < NUM_PARTS; i++)
+		sync_part(s, &parts[i]);
+	n = (uint16_t)num_waiting;
+	SV(s, n);
+	if (!s->saving)
+		num_waiting = n <= NUM_PARTS ? n : 0;
+	for (i = 0; i < num_waiting; i++) {
+		struct part *p = waiting[i];
+		sync_part_ptr(s, &p);
+		waiting[i] = p;
+	}
+	if (!s->saving) {
+		/* the device was reset: send it what the parts hold */
+		rhy_vol = 127;
+		for (i = 0; i < NUM_PARTS; i++)
+			if (parts[i].player && parts[i].mc)
+				part_send_all(&parts[i]);
+	}
+	audio_unlock();
+
+	for (i = 0; i < NUM_PLAYERS; i++)
+		if (!was_locked[i])
+			res_unlock(RT_SOUND, ids[i]);
 }

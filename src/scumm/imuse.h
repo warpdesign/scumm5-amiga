@@ -25,6 +25,8 @@ void imuse_timer(void);
  * run the sequencer (it catches up on unlock). */
 void audio_lock(void);
 void audio_unlock(void);
+/* While paused the music stands still and is silent (the main menu). */
+void audio_pause(int on);
 
 /* The MIDI device: status | param1 << 8 | param2 << 16. */
 extern void (*imuse_midi_send)(uint32_t msg);

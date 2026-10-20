@@ -10,3 +10,8 @@ void audio_lock(void)
 void audio_unlock(void)
 {
 }
+
+void audio_pause(int on)
+{
+	(void)on;
+}

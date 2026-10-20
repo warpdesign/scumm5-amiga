@@ -58,6 +58,8 @@ extern int (*res_in_use)(uint16_t type, uint16_t idx);
  * taken from the arena, expiring cached resources if needed, never expired. */
 void *res_alloc(uint32_t size);
 void res_free(void *p);
+/* Usable bytes of a res_alloc block. */
+uint32_t res_alloc_size(const void *p);
 
 /* 0 if the stored checksum matches the loaded data. */
 int res_verify(uint16_t type, uint16_t idx);

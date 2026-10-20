@@ -25,7 +25,7 @@ HOST = build/host
 HEADERS = $(wildcard src/*.h src/scumm/*.h)
 
 COMMON_SRC = util res heap
-SCUMM_SRC = vm ops5 object room boxes actor costume camera verbs text sound imuse input engine trace gfx
+SCUMM_SRC = vm ops5 object room boxes actor costume camera verbs text sound imuse input engine trace gfx saveload menu
 AMIGA_PROGS = roomview restest scummrun scumm5
 HOST_PROGS = restest scummrun
 

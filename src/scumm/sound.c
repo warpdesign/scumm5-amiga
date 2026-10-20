@@ -11,6 +11,7 @@
  */
 #include "scumm.h"
 #include "imuse.h"
+#include "saveload.h"
 
 #define MIDI_QUEUE_SIZE 0x100
 
@@ -168,4 +169,27 @@ void sound_update_music_timer(void)
 	audio_lock();
 	VAR(VAR_MUSIC_TIMER) = (int16_t)imuse_music_timer();
 	audio_unlock();
+}
+
+void sound_sync(struct ser *s)
+{
+	SVA(s, midi_queue);
+	SV(s, midi_queue_pos);
+	imuse_sync(s);
+}
+
+/* Instruments for the music that came back with a loaded game. */
+void sound_after_load(void)
+{
+	int i, n = res_count(RT_SOUND), on;
+
+	if (!sound_prepare)
+		return;
+	for (i = 1; i < n; i++) {
+		audio_lock();
+		on = imuse_sound_status(i, 0) == 1;
+		audio_unlock();
+		if (on)
+			sound_prepare(i);
+	}
 }

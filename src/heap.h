@@ -10,6 +10,8 @@
 void heap_init(void *base, uint32_t size);
 void *heap_alloc(uint32_t size);
 void heap_free(void *p);
+/* Usable bytes of an allocated block (at least what was asked for). */
+uint32_t heap_block_size(const void *p);
 uint32_t heap_free_bytes(void);
 uint32_t heap_largest_free(void);
 

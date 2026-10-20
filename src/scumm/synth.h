@@ -27,6 +27,8 @@ void synth_midi(uint32_t msg);
  * notes of the previous tick), synth_tick_end() after it (envelopes). */
 void synth_tick_start(void);
 void synth_tick_end(void);
+/* Silences the sounding voices, or gives them back their volume. */
+void synth_mute(int on);
 
 /* Paula, per voice (0 and 3 left, 1 and 2 right). paula_play() starts the
  * voice on data[0..words) and then repeats loop[0..loop_words); it is only

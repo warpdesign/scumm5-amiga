@@ -301,6 +301,11 @@ void res_free(void *p)
 		heap_free(p);
 }
 
+uint32_t res_alloc_size(const void *p)
+{
+	return heap_block_size(p);
+}
+
 void res_lock(uint16_t type, uint16_t idx)
 {
 	if (res_size(type, idx))
