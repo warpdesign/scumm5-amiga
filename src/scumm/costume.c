@@ -729,22 +729,27 @@ static uint8_t *cel_pix[CEL_ENTRIES];
 static uint32_t cel_runs[CEL_ENTRIES];
 static int cel_count, cel_recent_next;
 
-static uint32_t decode_pixels(uint8_t *pix, const uint8_t *src, int w, int h, int shr, int mask)
+/* The per-column loops below are kept out of line: inlined into
+ * costume_draw their variables spill to the (chip RAM) stack. */
+#define NOINLINE __attribute__((noinline))
+
+static NOINLINE uint32_t decode_pixels(uint8_t *pix, const uint8_t *src, int w, int h, int shr, int mask)
 {
-	int c, k, len = 0, color = 0;
+	int c, k, len = 0;
+	uint8_t color = 0, *p;
 	uint32_t runs = 0;
 
 	for (c = 0; c < w; c++)
-		for (k = 0; k < h; k++) {
+		for (k = h, p = pix + c; k > 0; k--, p += w) {
 			if (!len) {
 				int b = *src++;
-				color = b >> shr;
+				color = (uint8_t)(b >> shr);
 				len = b & mask;
 				if (!len)
 					len = *src++;
 				runs++;
 			}
-			pix[k * w + c] = (uint8_t)color;
+			*p = color;
 			len--;
 		}
 	return runs;
@@ -788,47 +793,41 @@ struct pix_group {
 };
 
 /* Lut entries are palette colours, 13 for transparent (13 is never drawn
- * here: such cels take the shadow path). zm and cm are zero_row when
- * absent, with step 0. */
+ * here: such cels take the shadow path). rows: one per drawn output row,
+ * source offset (row * width, below 32768: the pool is smaller) in the high
+ * word, yclip offset in the low. mode 0: no masks, 1: zm only, 2: zm and cm. */
 struct pix_draw {
 	const uint8_t *pix;
-	int32_t width;
-	const int16_t *yclip;
-	int32_t height;
+	const uint32_t *rows;
+	int32_t nrows;
 	const struct pix_group *groups;
 	int32_t ngroups;
 	const uint8_t *zm, *cm;
-	int32_t zstep, cstep;		/* -1: add the row offset, 0: zero_row */
+	int32_t mode;
 	const uint8_t *lut;
 	uint8_t *sp, *wp;
 };
 
-static const uint8_t zero_row[NUM_STRIPS];
-
 #ifdef __mc68000__
 void cel_pix_draw(const struct pix_draw *a);
 #else
-/* C model of costume68k.s cel_pix_draw */
+/* C model of costume68k.s cel_pix_draw: a column of output at a time */
 static void cel_pix_draw(const struct pix_draw *a)
 {
-	int k, i;
+	int i, k;
 
-	for (k = 0; k < a->height; k++) {
-		uint32_t off = (uint32_t)a->yclip[k];
-		const uint8_t *row = a->pix + (uint32_t)k * (uint32_t)a->width;
-		const uint8_t *zm = a->zm + (off & (uint32_t)a->zstep), *cm = a->cm + (off & (uint32_t)a->cstep);
-		uint8_t *sp = a->sp + off * 8, *wp = a->wp + off;
-		if (a->yclip[k + 1] == a->yclip[k])
-			continue;
-		for (i = 0; i < a->ngroups; i++) {
-			const struct pix_group *g = &a->groups[i];
-			int c, n;
-			if ((zm[g->xb] | cm[g->xb]) & g->bit)
+	for (i = 0; i < a->ngroups; i++) {
+		const struct pix_group *g = &a->groups[i];
+		const uint8_t *src = a->pix + g->last;
+		for (k = 0; k < a->nrows; k++) {
+			uint32_t off = a->rows[k] & 0xFFFF;
+			int c, n, so = (int)(a->rows[k] >> 16);
+			if (a->mode && ((a->zm[g->xb + off] | (a->mode == 2 ? a->cm[g->xb + off] : 0)) & g->bit))
 				continue;
-			for (c = g->last, n = g->before; n >= 0; c--, n--)
-				if (a->lut[row[c]] != 13) {
-					sp[g->x] = a->lut[row[c]];
-					wp[g->xb] |= g->bit;
+			for (c = 0, n = g->before; n >= 0; c--, n--)
+				if (a->lut[src[so + c]] != 13) {
+					a->sp[off * 8 + g->x] = a->lut[src[so + c]];
+					a->wp[off + g->xb] |= g->bit;
 					break;
 				}
 		}
@@ -836,46 +835,177 @@ static void cel_pix_draw(const struct pix_draw *a)
 }
 #endif
 
-static int draw_from_pixels(struct cel_state *st, const struct rle *r, int height, int columns, int rows,
+
+/* below[i] = table[i] < scale (twice, so 256 entries from any start are
+ * contiguous); pre[i] counts them before index i */
+static int below_scale = -1;
+static uint8_t below[512];
+static uint16_t pre[257];
+
+static NOINLINE void prep_scale(const uint8_t *t, int scale)
+{
+	int i, c = 0;
+
+	below_scale = scale;
+	for (i = 0; i < 256; i++) {
+		pre[i] = (uint16_t)c;
+		c += below[i] = below[i + 256] = t[i] < scale;
+	}
+	pre[256] = (uint16_t)c;
+}
+
+/* entries below scale among the n indices from j going in direction dir */
+static int count_below(const uint8_t *t, int j, int n, int dir, int scale)
+{
+	int c;
+
+	if (n <= 0)
+		return 0;
+	if (scale != below_scale)
+		prep_scale(t, scale);
+	if (dir < 0)
+		j -= n - 1;
+	j &= 0xFF;
+	c = (n >> 8) * pre[256];
+	n &= 0xFF;
+	if (j + n <= 256)
+		return c + pre[j + n] - pre[j];
+	return c + pre[256] - pre[j] + pre[j + n - 256];
+}
+
+/* p climbs by one per table entry below scale; counts the steps taken
+ * while p < 0 and the index of the last one */
+static NOINLINE int scale_walk(const uint8_t *t, int j, int n, int dir, int scale, int p, int *skip, int *start)
+{
+	int k = *skip, st = *start;
+
+	/* p never decreases: once it reaches 0 only the count is left */
+	for (; n > 0 && p < 0; n--) {
+		k++;
+		st = j;
+		p += t[j & 0xFF] < scale;
+		j += dir;
+	}
+	*skip = k;
+	*start = st;
+	return p + count_below(t, j, n, dir, scale);
+}
+
+static NOINLINE int build_yclip(int16_t *yclip, int height, int oy, int bottom, const uint8_t *t, int idx, int scale)
+{
+	int k, v, prev = 0, rows = 0;
+
+	if (scale != 255 && scale != below_scale)
+		prep_scale(t, scale);
+	for (k = 0; k <= height; k++) {
+		v = (oy < 0 ? 0 : oy > bottom ? bottom : oy) * NUM_STRIPS;
+		yclip[k] = (int16_t)v;
+		if (k && v != prev)
+			rows++;
+		prev = v;
+		if (k < height && (scale == 255 || below[(idx + k) & 0xFF]))
+			oy++;
+	}
+	return rows;
+}
+
+/* ext: min x, max x, number of pixel-map groups */
+/* *pat: the advance flags, adv itself or a slice of below[] */
+static NOINLINE int build_adv(uint8_t *adv, const uint8_t **pat, int n, const uint8_t *t, int sxi, int step, int scale, int x, int *ext)
+{
+	int c = 0, moves = 0, m, min_x = x, max_x = x;
+
+	*pat = adv;
+	if (step == 1 && n <= 256 && scale != 255) {
+		/* the columns never leave the screen: copy the pattern, count the moves */
+		moves = count_below(t, sxi, n, 1, scale);
+		if (x + moves < SCREEN_WIDTH) {
+			adv = below + sxi;
+			*pat = adv;
+			ext[0] = x;
+			ext[1] = x + moves - adv[n - 1];
+			ext[2] = moves - adv[n - 1] + 1;
+			return n;
+		}
+		moves = 0;
+	}
+
+	while (c < n) {
+		m = scale == 255 || t[sxi] < scale;
+		adv[c++] = (uint8_t)m;
+		sxi = (sxi + step) & 0xFF;
+		if (m) {
+			moves++;
+			x += step;
+			if (x < 0 || x >= SCREEN_WIDTH)
+				break;
+			if (c < n) {
+				if (x < min_x) min_x = x;
+				if (x > max_x) max_x = x;
+			}
+		}
+	}
+	ext[0] = min_x;
+	ext[1] = max_x;
+	ext[2] = c ? moves - adv[c - 1] + 1 : 0;
+	return c;
+}
+
+static NOINLINE void build_groups(struct pix_group *g, const uint8_t *adv, int columns, int x, int step, int col0)
+{
+	int i, first = 0;
+
+	for (i = 0; i < columns; i++)
+		if (adv[i] || i == columns - 1) {
+			g->x = (int16_t)x;
+			g->bit = (uint8_t)(0x80 >> (x & 7));
+			g->xb = (uint8_t)(x >> 3);
+			g->last = (int16_t)(col0 + i);
+			g->before = (int16_t)(i - first);
+			g++;
+			first = i + 1;
+			x += step;
+		}
+}
+
+static NOINLINE int build_rows(uint32_t *rows, const int16_t *yclip, int height, int width)
+{
+	uint32_t so = 0, step = (uint32_t)width << 16;
+	uint32_t *r = rows;
+
+	for (; height > 0; height--, yclip++, so += step)
+		if (yclip[1] != yclip[0])
+			*r++ = so | (uint16_t)yclip[0];
+	return (int)(r - rows);
+}
+
+static int draw_from_pixels(struct cel_state *st, const struct rle *r, int height, int columns, int rows, int n,
 			    const int16_t *yclip, const uint8_t *adv, const uint8_t *zm, const uint8_t *cm)
 {
 	static struct pix_group groups[MAX_SCALED_W];
+	static uint32_t row_offs[MAX_CEL_H];
 	uint8_t lut[32];
 	struct pix_draw a;
-	int i, e, n = 0, x = r->x, first = 0;
+	int i, e;
 
 	if (r->width > MAX_SCALED_W)
 		return 0;
-	for (i = 0; i < columns; i++)
-		n += adv[i] || i == columns - 1;
 	/* worth a pixel map only well below full size */
 	if ((uint32_t)n * (uint32_t)rows * 4 >= (uint32_t)r->width * (uint32_t)height)
 		return 0;
 	if ((e = cel_pixels(st, r, height)) < 0 || (uint32_t)n * (uint32_t)rows >= cel_runs[e])
 		return 0;
-	n = 0;
-	for (i = 0; i < columns; i++)
-		if (adv[i] || i == columns - 1) {
-			groups[n].x = (int16_t)x;
-			groups[n].bit = (uint8_t)(0x80 >> (x & 7));
-			groups[n].xb = (uint8_t)(x >> 3);
-			groups[n].last = (int16_t)(r->col0 + i);
-			groups[n++].before = (int16_t)(i - first);
-			first = i + 1;
-			x += r->scale_x_step;
-		}
+	build_groups(groups, adv, columns, r->x, r->scale_x_step, r->col0);
 	for (i = 0; i < 32; i++)
 		lut[i] = i && st->palette[i] != 13 ? st->palette[i] : 13;
+	a.nrows = build_rows(row_offs, yclip, height, r->width);
 	a.pix = cel_pix[e];
-	a.width = r->width;
-	a.yclip = yclip;
-	a.height = height;
+	a.rows = row_offs;
 	a.groups = groups;
 	a.ngroups = n;
-	a.zm = zm ? zm : zero_row;
-	a.zstep = zm ? -1 : 0;
-	a.cm = cm ? cm : zero_row;
-	a.cstep = cm ? -1 : 0;
+	a.zm = zm ? zm : cm;
+	a.cm = cm;
+	a.mode = zm && cm ? 2 : zm || cm ? 1 : 0;
 	a.lut = lut;
 	a.sp = scratch;
 	a.wp = scratch_wr;
@@ -886,42 +1016,25 @@ static int draw_from_pixels(struct cel_state *st, const struct rle *r, int heigh
 static int rle_decode_scaled(struct cel_state *st, struct rle *r, int height)
 {
 	static int16_t yclip[MAX_CEL_H + 1];
-	static uint8_t adv[MAX_SCALED_W];
+	static uint8_t adv_buf[MAX_SCALED_W];
+	const uint8_t *adv;
 	const uint8_t *table = small_costume_scale_table;
 	const uint8_t *zmask, *cmask;
 	struct cost_scaled a;
-	int k, oy = r->y, bottom = st->out_h, x = r->x, sxi = r->scale_x_index, c, min_x, max_x, rows = 0;
+	int oy = r->y, bottom = st->out_h, x = r->x, sxi = r->scale_x_index, c, min_x, max_x, rows, ext[3];
 
 	if (st->shadow_mode & 0x20 || st->has_shadow_color || height <= 0 || height > MAX_CEL_H)
 		return 0;
 	if (x < 0 || x >= SCREEN_WIDTH || r->skip_width <= 0 || r->skip_width > MAX_SCALED_W)
 		return 0;
-	for (k = 0; k <= height; k++) {
-		yclip[k] = (int16_t)((oy < 0 ? 0 : oy > bottom ? bottom : oy) * NUM_STRIPS);
-		if (k && yclip[k] != yclip[k - 1])
-			rows++;
-		if (k < height && (st->scale_y == 255 || table[(r->scale_y_index + k) & 0xFF] < st->scale_y))
-			oy++;
-	}
-	min_x = max_x = x;
-	for (c = 0; c < r->skip_width;) {
-		int moves = st->scale_x == 255 || table[sxi] < st->scale_x;
-		adv[c++] = (uint8_t)moves;
-		sxi = (sxi + r->scale_x_step) & 0xFF;
-		if (moves) {
-			x += r->scale_x_step;
-			if (x < 0 || x >= SCREEN_WIDTH)
-				break;
-			if (c < r->skip_width) {
-				if (x < min_x) min_x = x;
-				if (x > max_x) max_x = x;
-			}
-		}
-	}
+	rows = build_yclip(yclip, height, oy, bottom, table, r->scale_y_index, st->scale_y);
+	c = build_adv(adv_buf, &adv, r->skip_width, table, sxi, r->scale_x_step, st->scale_x, x, ext);
+	min_x = ext[0];
+	max_x = ext[1];
 
 	zmask = gfx_screen_mask_buffer(0, 0, st->zbuf);
 	cmask = gfx_screen_mask_buffer(0, 0, 0);
-	if (!draw_from_pixels(st, r, height, c, rows, yclip, adv, zmask != cmask ? zmask : 0, charset_mask_used ? cmask : 0)) {
+	if (!draw_from_pixels(st, r, height, c, rows, ext[2], yclip, adv, zmask != cmask ? zmask : 0, charset_mask_used ? cmask : 0)) {
 	x = r->x;
 	a.r.src = r->src;
 	a.r.sp = scratch + x;
@@ -962,7 +1075,7 @@ static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, i
 {
 	const uint8_t *table = small_costume_scale_table;
 	int scaled = st->scale_x != 0xFF || st->scale_y != 0xFF;
-	int i, j, step, lines_to_skip = 0, draw_flag = 1;
+	int j, step, lines_to_skip = 0, draw_flag = 1;
 	int start_x = 128, start_y = 128;
 	int left, right, top, bottom;
 	int bounds_right = SCREEN_WIDTH, bounds_bottom = st->out_h;
@@ -982,34 +1095,14 @@ static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, i
 		}
 		if (st->to_right) {
 			start_x = j = (128 - x_move_cur) & 0xFF;
-			for (i = 0; i < x_move_cur; i++)
-				if (table[j++ & 0xFF] < st->scale_x)
-					r.x -= scale_x_step;
-			left = right = r.x;
-			j = start_x;
-			for (i = 0; i < width; i++) {
-				if (right < 0) {
-					lines_to_skip++;
-					start_x = j;
-				}
-				if (table[j++ & 0xFF] < st->scale_x)
-					right++;
-			}
+			r.x -= scale_x_step * count_below(table, j, x_move_cur, 1, st->scale_x);
+			left = r.x;
+			right = scale_walk(table, start_x, width, 1, st->scale_x, r.x, &lines_to_skip, &start_x);
 		} else {
 			start_x = j = (128 + x_move_cur) & 0xFF;
-			for (i = 0; i < x_move_cur; i++)
-				if (table[j-- & 0xFF] < st->scale_x)
-					r.x += scale_x_step;
-			left = right = r.x;
-			j = start_x;
-			for (i = 0; i < width; i++) {
-				if (left >= bounds_right) {
-					start_x = j;
-					lines_to_skip++;
-				}
-				if (table[j-- & 0xFF] < st->scale_x)
-					left--;
-			}
+			r.x += scale_x_step * count_below(table, j, x_move_cur, -1, st->scale_x);
+			right = r.x;
+			left = bounds_right - 1 - scale_walk(table, start_x, width, -1, st->scale_x, bounds_right - 1 - r.x, &lines_to_skip, &start_x);
 		}
 		if (lines_to_skip)
 			lines_to_skip--;
@@ -1020,14 +1113,9 @@ static int cel_paint(struct cel_state *st, const uint8_t *src, int x_move_cur, i
 			step = -step;
 		}
 		start_y = j = (128 - y_move_cur) & 0xFF;
-		for (i = 0; i < y_move_cur; i++)
-			if (table[j++ & 0xFF] < st->scale_y)
-				r.y -= step;
-		top = bottom = r.y;
-		j = start_y;
-		for (i = 0; i < height; i++)
-			if (table[j++ & 0xFF] < st->scale_y)
-				bottom++;
+		r.y -= step * count_below(table, j, y_move_cur, 1, st->scale_y);
+		top = r.y;
+		bottom = r.y + count_below(table, start_y, height, 1, st->scale_y);
 	} else {
 		if (!st->to_right)
 			x_move_cur = -x_move_cur;

@@ -29,8 +29,8 @@ static int hot_x, hot_y;
 static uint16_t cl_palette;	/* longword index of the first palette move */
 static int back;		/* buffer being drawn */
 static int16_t pend_top[2][NUM_STRIPS], pend_bot[2][NUM_STRIPS];
-static uint8_t pal_rgb[768];
-static uint8_t pal_pending;
+static uint8_t pal_rgb[768] __attribute__((aligned(4)));
+static int16_t pal_lo[2], pal_hi[2];	/* colours to rewrite per copper list */
 static APTR oldview;
 
 static volatile ULONG vbl_count;
@@ -110,23 +110,37 @@ static ULONG *move(ULONG *cl, UWORD reg, UWORD val)
 	return cl;
 }
 
+/* per bank of 32 colours: BPLCON3 high nibbles, 32 moves, BPLCON3 low nibbles, 32 moves */
+#define PAL_BANK_LONGS 66
+
 static void write_palette(ULONG *cl)
 {
 	int b, i;
-	const uint8_t *c;
 
 	cl += cl_palette;
 	for (b = 0; b < 8; b++) {
-		c = pal_rgb + b * 32 * 3;
 		cl = move(cl, 0x106, (UWORD)(b << 13 | 0x0c00));
 		for (i = 0; i < 32; i++)
-			cl = move(cl, (UWORD)(0x180 + i * 2), (UWORD)((c[i * 3] & 0xf0) << 4 | (c[i * 3 + 1] & 0xf0) | c[i * 3 + 2] >> 4));
+			cl = move(cl, (UWORD)(0x180 + i * 2), 0);
 		cl = move(cl, 0x106, (UWORD)(b << 13 | 0x0e00));
 		for (i = 0; i < 32; i++)
-			cl = move(cl, (UWORD)(0x180 + i * 2), (UWORD)((c[i * 3] & 0x0f) << 8 | (c[i * 3 + 1] & 0x0f) << 4 | (c[i * 3 + 2] & 0x0f)));
+			cl = move(cl, (UWORD)(0x180 + i * 2), 0);
 	}
 	cl = move(cl, 0x106, 0x0c00);
 	*cl = 0xfffffffe;
+}
+
+static void write_colors(ULONG *cl, int lo, int hi)
+{
+	const uint8_t *c = pal_rgb + lo * 3;
+	UWORD *w;
+	int i;
+
+	for (i = lo; i <= hi; i++, c += 3) {
+		w = (UWORD *)(cl + cl_palette + (i >> 5) * PAL_BANK_LONGS + 1 + (i & 31)) + 1;
+		w[0] = (UWORD)((c[0] & 0xf0) << 4 | (c[1] & 0xf0) | c[2] >> 4);
+		w[2 * 33] = (UWORD)((c[0] & 0x0f) << 8 | (c[1] & 0x0f) << 4 | (c[2] & 0x0f));
+	}
 }
 
 static void build_copper(ULONG *cl, uint8_t *planes, UWORD *nullspr, UWORD *spr)
@@ -174,6 +188,8 @@ int display_open(void)
 			return -1;
 		sprites[i] = (UWORD *)(copper[i] + CL_LONGS + 1);
 		build_copper(copper[i], disp[i], (UWORD *)(copper[i] + CL_LONGS), sprites[i]);
+		pal_lo[i] = 0;
+		pal_hi[i] = 255;
 	}
 
 	vbl_rate = *((signed char *)GfxBase + GFX_VBLANK);
@@ -259,8 +275,27 @@ void display_layout(int b, int h)
 
 void display_set_palette(const uint8_t *rgb)
 {
+	int lo = 0, hi = 255, b;
+
+	if (!((ULONG)rgb & 3)) {
+		const ULONG *n = (const ULONG *)rgb, *o = (const ULONG *)pal_rgb;
+		int a = 0, z = 191;
+		while (a <= z && n[a] == o[a])
+			a++;
+		if (a > z)
+			return;
+		while (n[z] == o[z])
+			z--;
+		lo = a * 4 / 3;
+		hi = (z * 4 + 3) / 3;
+	}
 	memcpy(pal_rgb, rgb, sizeof(pal_rgb));
-	pal_pending = 2;
+	for (b = 0; b < 2; b++) {
+		if (pal_lo[b] > pal_hi[b] || lo < pal_lo[b])
+			pal_lo[b] = (int16_t)lo;
+		if (hi > pal_hi[b])
+			pal_hi[b] = (int16_t)hi;
+	}
 }
 
 void display_dirty(int v, int strip, int n, int top, int bottom)
@@ -467,9 +502,10 @@ void display_present(void)
 		WaitTOF();
 	copy_pending(back);
 	write_sprites(sprites[back]);
-	if (pal_pending) {
-		write_palette(copper[back]);
-		pal_pending--;
+	if (pal_lo[back] <= pal_hi[back]) {
+		write_colors(copper[back], pal_lo[back], pal_hi[back]);
+		pal_lo[back] = 1;
+		pal_hi[back] = 0;
 	}
 	wait_blit();
 	*(volatile ULONG *)(CUSTOM + 0x080 / 2) = (ULONG)copper[back];

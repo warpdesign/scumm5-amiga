@@ -371,16 +371,18 @@ static void set_actor_redraw_flags(void)
 static void reset_actor_bgs(void)
 {
 	int i, j, run;
+	uint32_t *u = &gfx_usage[3 * g.screen_start_strip], any = 0;
 
 	for (i = 0; i < SCREEN_WIDTH / 8; i++) {
 		clear_gfx_usage_bit(g.screen_start_strip + i, USAGE_BIT_DIRTY);
 		clear_gfx_usage_bit(g.screen_start_strip + i, USAGE_BIT_RESTORED);
+		any |= u[3 * i];
 	}
 	/* actor j is bit j - 1 of a strip's first usage word (NUM_ACTORS <= 32);
 	 * its strips in a row are restored together */
 	for (j = 1; j < NUM_ACTORS; j++) {
 		struct actor *a = &g.actors[j];
-		if (!((a->top != 0x7fffffff && a->needs_redraw) || a->need_bg_reset))
+		if (!((a->top != 0x7fffffff && a->needs_redraw) || a->need_bg_reset) || !(any >> (j - 1) & 1))
 			continue;
 		run = -1;
 		for (i = 0; i <= SCREEN_WIDTH / 8; i++) {

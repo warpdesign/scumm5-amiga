@@ -270,7 +270,6 @@ cost_done:
 	subq.l	#1,%a4
 	bra	.Lsmain\@
 .Lsfetch\@:
-	moveq	#0,%d6
 	move.b	(%a0)+,%d6
 	move.w	(%a5,%d6.w*2),%d2
 	move.w	%d2,%d0
@@ -309,6 +308,7 @@ cost_runs_scaled:
 	move.l	R_MODE(%a6),%d7
 	move.l	R_HEIGHT(%a6),%d1
 	move.l	S_YCLIP(%a6),%a6
+	moveq	#0,%d6			| only its low byte changes from here
 	cmp.l	#1,%d7
 	beq	.Lsmode1
 	bhi	.Lsmode2
@@ -324,90 +324,88 @@ cost_scaled_done:
 
 | struct pix_draw offsets (costume.c)
 	.set	P_PIX, 0
-	.set	P_WIDTH, 4
-	.set	P_YCLIP, 8
-	.set	P_HEIGHT, 12
-	.set	P_GROUPS, 16
-	.set	P_NGROUPS, 20
-	.set	P_ZM, 24
-	.set	P_CM, 28
-	.set	P_ZSTEP, 32
-	.set	P_CSTEP, 36
-	.set	P_LUT, 40
-	.set	P_SP, 44
-	.set	P_WP, 48
+	.set	P_ROWS, 4
+	.set	P_NROWS, 8
+	.set	P_GROUPS, 12
+	.set	P_NGROUPS, 16
+	.set	P_ZM, 20
+	.set	P_CM, 24
+	.set	P_MODE, 28
+	.set	P_LUT, 32
+	.set	P_SP, 36
+	.set	P_WP, 40
 
-| registers per output row:
-|  d0 scratch x  d1 mask byte  d2 source column  d3 pixel  d4 mask bit
-|  d5 temp  d6 columns left  d7 groups left  a0 groups  a1 scratch row
-|  a2 written bits row  a3 z mask row  a4 charset mask row  a5 lut
-|  a6 source row
-| locals: 0(sp) rows left, 4(sp) yclip, 8(sp) source row, 12(sp) args
-.macro	PIXROWS masked
-.Lprow\@:
-	move.l	12(%sp),%a0
-	move.l	4(%sp),%a1
-	move.w	(%a1)+,%d0
-	move.l	%a1,4(%sp)
-	cmp.w	(%a1),%d0
-	beq	.Lpnext\@
-	ext.l	%d0
-	move.l	8(%sp),%a6
+| registers per group (one output column):
+|  d0 mask temp  d1 columns left  d2 source index  d3 pixel  d4 mask bit
+|  d5 row (source offset high, yclip offset low)  d6 columns before
+|  d7 rows left  a0 rows  a1 scratch column  a2 written bits column
+|  a3 z mask column  a4 charset mask column  a5 lut  a6 source column
+| locals: 0(sp) groups left, 4(sp) next group, 8(sp) args
+.macro	PIXCOLS mode
+.Lpg\@:
+	move.l	8(%sp),%a0
+	move.l	4(%sp),%a6
+	move.w	(%a6)+,%d0
+	moveq	#0,%d4
+	move.b	(%a6)+,%d4
+	moveq	#0,%d1
+	move.b	(%a6)+,%d1
+	move.w	(%a6)+,%d2
+	move.w	(%a6)+,%d6
+	move.l	%a6,4(%sp)
+	move.l	P_SP(%a0),%a1
+	add.w	%d0,%a1
 	move.l	P_WP(%a0),%a2
-	add.l	%d0,%a2
-.if \masked
-	move.l	P_ZSTEP(%a0),%d1
-	and.l	%d0,%d1
+	add.l	%d1,%a2
+.if \mode
 	move.l	P_ZM(%a0),%a3
 	add.l	%d1,%a3
-	move.l	P_CSTEP(%a0),%d1
-	and.l	%d0,%d1
+.if \mode == 2
 	move.l	P_CM(%a0),%a4
 	add.l	%d1,%a4
 .endif
-	lsl.l	#3,%d0
-	move.l	P_SP(%a0),%a1
-	add.l	%d0,%a1
-	move.l	P_NGROUPS(%a0),%d7
-	subq.w	#1,%d7
-	move.l	P_GROUPS(%a0),%a0
-	moveq	#0,%d3
-.Lpg\@:
-	move.l	(%a0)+,%d0
-	move.l	(%a0)+,%d2
-	moveq	#0,%d1
-	move.b	%d0,%d1
-	move.w	%d0,%d4
-	lsr.w	#8,%d4
-.if \masked
-	move.b	(%a3,%d1.w),%d5
-	or.b	(%a4,%d1.w),%d5
-	and.b	%d4,%d5
-	bne	.Lpgn\@
 .endif
-	swap	%d0
-	move.w	%d2,%d6
-	swap	%d2
-.Lps\@:
+	move.l	P_PIX(%a0),%a6
+	add.w	%d2,%a6
+	move.l	P_NROWS(%a0),%d7
+	subq.w	#1,%d7
+	move.l	P_ROWS(%a0),%a0
+.Lpr\@:
+	move.l	(%a0)+,%d5
+.if \mode
+	move.b	(%a3,%d5.w),%d0
+.if \mode == 2
+	or.b	(%a4,%d5.w),%d0
+.endif
+	and.b	%d4,%d0
+	bne	.Lpn\@
+.endif
+	swap	%d5
+	move.b	(%a6,%d5.w),%d3
+	move.b	(%a5,%d3.w),%d3
+	cmp.b	#13,%d3
+	beq	.Lpt\@
+.Lph\@:
+	swap	%d5
+	move.b	%d3,(%a1,%d5.w*8)
+	or.b	%d4,(%a2,%d5.w)
+.Lpn\@:
+	dbra	%d7,.Lpr\@
+	subq.l	#1,(%sp)
+	bne	.Lpg\@
+	bra	cel_pix_done
+.Lpt\@:
+	move.w	%d6,%d1
+	beq	.Lpn\@
+	move.w	%d5,%d2
+	subq.w	#1,%d1
+1:	subq.w	#1,%d2
 	move.b	(%a6,%d2.w),%d3
 	move.b	(%a5,%d3.w),%d3
 	cmp.b	#13,%d3
-	bne	.Lphit\@
-	subq.w	#1,%d2
-	dbra	%d6,.Lps\@
-	bra	.Lpgn\@
-.Lphit\@:
-	move.b	%d3,(%a1,%d0.w)
-	or.b	%d4,(%a2,%d1.w)
-.Lpgn\@:
-	dbra	%d7,.Lpg\@
-.Lpnext\@:
-	move.l	12(%sp),%a0
-	move.l	P_WIDTH(%a0),%d0
-	add.l	%d0,8(%sp)
-	subq.l	#1,(%sp)
-	bne	.Lprow\@
-	bra	cel_pix_done
+	bne	.Lph\@
+	dbra	%d1,1b
+	bra	.Lpn\@
 .endm
 
 | void cel_pix_draw(const struct pix_draw *a)
@@ -417,20 +415,26 @@ cost_scaled_done:
 cel_pix_draw:
 	movem.l	%d2-%d7/%a2-%a6,-(%sp)
 	move.l	48(%sp),%a0
-	lea	-16(%sp),%sp
-	move.l	%a0,12(%sp)
-	move.l	P_HEIGHT(%a0),(%sp)
-	move.l	P_YCLIP(%a0),4(%sp)
-	move.l	P_PIX(%a0),8(%sp)
+	lea	-12(%sp),%sp
+	move.l	%a0,8(%sp)
+	move.l	P_NGROUPS(%a0),(%sp)
+	beq	cel_pix_done
+	tst.l	P_NROWS(%a0)
+	beq	cel_pix_done
+	move.l	P_GROUPS(%a0),4(%sp)
 	move.l	P_LUT(%a0),%a5
-	move.l	P_ZSTEP(%a0),%d0
-	or.l	P_CSTEP(%a0),%d0
-	bne	.Lpmasked
-	PIXROWS	0
-.Lpmasked:
-	PIXROWS	1
+	moveq	#0,%d3
+	move.l	P_MODE(%a0),%d0
+	beq	.Lpm0
+	subq.l	#1,%d0
+	beq	.Lpm1
+	PIXCOLS	2
+.Lpm0:
+	PIXCOLS	0
+.Lpm1:
+	PIXCOLS	1
 cel_pix_done:
-	lea	16(%sp),%sp
+	lea	12(%sp),%sp
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
 
