@@ -342,6 +342,11 @@ def build(index_path, data_paths, verbose):
                 continue
             data = files[loc[0]]
             off = loc[1] + roff
+            if data[off:off + 4] != TAGS[t] and t > 0:
+                # a stale index entry (Atlantis costume 182): absent, as
+                # ScummVM only checks a resource when it loads it
+                entries += bytes(12)
+                continue
             if data[off:off + 4] != TAGS[t]:
                 raise ValueError('%s %d: expected %s at %d, found %r' % (NAMES[t], i, TAGS[t], off, data[off:off + 4]))
             if t == 0:

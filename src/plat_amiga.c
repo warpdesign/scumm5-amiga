@@ -12,6 +12,70 @@ APTR DOSBase;
 
 int app_main(int argc, char **argv);
 
+static inline APTR FindTask(const char *name)
+{
+	register const char *a1 __asm("a1") = name;
+	register APTR d0 __asm("d0");
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -294(%%a6)" : "=r"(d0), "+r"(a1) : "r"(a6) : "d1", "a0", "cc", "memory");
+	return d0;
+}
+
+static inline void WaitPort(APTR port)
+{
+	register APTR a0 __asm("a0") = port;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -384(%%a6)" : "+r"(a0) : "r"(a6) : "d0", "d1", "a1", "cc", "memory");
+}
+
+static inline APTR GetMsg(APTR port)
+{
+	register APTR a0 __asm("a0") = port;
+	register APTR d0 __asm("d0");
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -372(%%a6)" : "=r"(d0), "+r"(a0) : "r"(a6) : "d1", "a1", "cc", "memory");
+	return d0;
+}
+
+static inline void ReplyMsg(APTR msg)
+{
+	register APTR a1 __asm("a1") = msg;
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -378(%%a6)" : "+r"(a1) : "r"(a6) : "d0", "d1", "a0", "cc", "memory");
+}
+
+static inline void Forbid(void)
+{
+	register APTR a6 __asm("a6") = SysBase;
+	__asm volatile("jsr -132(%%a6)" : : "r"(a6) : "d0", "d1", "a0", "a1", "cc", "memory");
+}
+
+static inline LONG Output(void)
+{
+	register LONG d0 __asm("d0");
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -60(%%a6)" : "=r"(d0) : "r"(a6) : "d1", "a0", "a1", "cc", "memory");
+	return d0;
+}
+
+#define PR_MSGPORT 92
+#define PR_CLI 172
+
+static APTR wbmsg;
+
+/* Also reached from plat_exit(), from anywhere. */
+void amiga_cleanup(void)
+{
+	if (DOSBase)
+		CloseLibrary(DOSBase);
+	DOSBase = 0;
+	if (wbmsg) {
+		Forbid();
+		ReplyMsg(wbmsg);
+		wbmsg = 0;
+	}
+}
+
 /* AmigaDOS passes one argument string; split it like a C runtime would. */
 int amiga_main(const char *args, ULONG arglen)
 {
@@ -19,7 +83,14 @@ int amiga_main(const char *args, ULONG arglen)
 	static char *argv[MAX_ARGS + 1];
 	char *d = buf;
 	int argc = 1, rc;
+	APTR me = FindTask(0);
 
+	/* started from Workbench: no arguments, and its message to answer */
+	if (!*(LONG *)((UBYTE *)me + PR_CLI)) {
+		WaitPort((UBYTE *)me + PR_MSGPORT);
+		wbmsg = GetMsg((UBYTE *)me + PR_MSGPORT);
+		arglen = 0;
+	}
 	argv[0] = "prog";
 	while (arglen && argc < MAX_ARGS && d < buf + sizeof(buf) - 1) {
 		while (arglen && (*args == ' ' || *args == '\t' || *args == '\n')) {
@@ -51,10 +122,8 @@ int amiga_main(const char *args, ULONG arglen)
 	argv[argc] = 0;
 
 	DOSBase = OpenLibrary("dos.library", 36);
-	if (!DOSBase)
-		return 20;
-	rc = app_main(argc, argv);
-	CloseLibrary(DOSBase);
+	rc = DOSBase ? app_main(argc, argv) : 20;
+	amiga_cleanup();
 	return rc;
 }
 
@@ -76,6 +145,61 @@ static inline LONG Write(LONG fh, const void *buf, LONG len)
 	register APTR a6 __asm("a6") = DOSBase;
 	__asm volatile("jsr -48(%%a6)" : "=r"(d0), "+r"(d1) : "r"(d2), "r"(d3), "r"(a6) : "a0", "a1", "cc", "memory");
 	return d0;
+}
+
+static inline LONG DeleteFile(const char *name)
+{
+	register const char *d1 __asm("d1") = name;
+	register LONG d0 __asm("d0");
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -72(%%a6)" : "=r"(d0), "+r"(d1) : "r"(a6) : "a0", "a1", "cc", "memory");
+	return d0;
+}
+
+static inline LONG Rename(const char *from, const char *to)
+{
+	register const char *d1 __asm("d1") = from;
+	register const char *d2 __asm("d2") = to;
+	register LONG d0 __asm("d0");
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -78(%%a6)" : "=r"(d0), "+r"(d1) : "r"(d2), "r"(a6) : "a0", "a1", "cc", "memory");
+	return d0;
+}
+
+static inline LONG CreateDir(const char *name)
+{
+	register const char *d1 __asm("d1") = name;
+	register LONG d0 __asm("d0");
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -120(%%a6)" : "=r"(d0), "+r"(d1) : "r"(a6) : "a0", "a1", "cc", "memory");
+	return d0;
+}
+
+static inline void UnLock(LONG lock)
+{
+	register LONG d1 __asm("d1") = lock;
+	register APTR a6 __asm("a6") = DOSBase;
+	__asm volatile("jsr -90(%%a6)" : "+r"(d1) : "r"(a6) : "d0", "a0", "a1", "cc", "memory");
+}
+
+int plat_delete(const char *path)
+{
+	return DeleteFile(path) ? 0 : -1;
+}
+
+int plat_rename(const char *from, const char *to)
+{
+	return Rename(from, to) ? 0 : -1;
+}
+
+int plat_mkdir(const char *path)
+{
+	LONG lock = CreateDir(path);
+
+	if (!lock)
+		return -1;
+	UnLock(lock);
+	return 0;
 }
 
 plat_file plat_open(const char *path)
@@ -133,8 +257,10 @@ void plat_free(void *p, uint32_t n)
 
 void plat_log(const char *s)
 {
-	PutStr(s);
-	PutStr("\n");
+	if (Output()) {
+		PutStr(s);
+		PutStr("\n");
+	}
 	uae_log(s);
 }
 

@@ -19,6 +19,10 @@ int32_t plat_read(plat_file f, void *buf, uint32_t n);
 int32_t plat_write(plat_file f, const void *buf, uint32_t n);
 int plat_seek(plat_file f, uint32_t pos);
 int32_t plat_size(plat_file f);
+/* 0 on success */
+int plat_delete(const char *path);
+int plat_rename(const char *from, const char *to);
+int plat_mkdir(const char *path);
 
 void *plat_alloc(uint32_t n, int flags);
 void plat_free(void *p, uint32_t n);

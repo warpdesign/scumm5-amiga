@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <time.h>
 
@@ -42,6 +43,21 @@ int32_t plat_write(plat_file f, const void *buf, uint32_t n)
 int plat_seek(plat_file f, uint32_t pos)
 {
 	return fseek(f, (long)pos, SEEK_SET);
+}
+
+int plat_delete(const char *path)
+{
+	return remove(path);
+}
+
+int plat_rename(const char *from, const char *to)
+{
+	return rename(from, to);
+}
+
+int plat_mkdir(const char *path)
+{
+	return mkdir(path, 0777);
 }
 
 int32_t plat_size(plat_file f)

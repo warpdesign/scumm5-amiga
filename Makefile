@@ -24,10 +24,10 @@ OUT = build/amiga
 HOST = build/host
 HEADERS = $(wildcard src/*.h src/scumm/*.h)
 
-COMMON_SRC = util res heap
+COMMON_SRC = util res heap convert detect
 SCUMM_SRC = vm ops5 object room boxes actor costume camera verbs text sound imuse input engine trace gfx saveload menu
-AMIGA_PROGS = roomview restest scummrun scumm5
-HOST_PROGS = restest scummrun
+AMIGA_PROGS = roomview restest scummrun scumm5 scummconv
+HOST_PROGS = restest scummrun scummconv
 
 AMIGA_COMMON = $(OUT)/start.o $(OUT)/plat_amiga.o $(COMMON_SRC:%=$(OUT)/%.o)
 HOST_COMMON = $(HOST)/plat_host.o $(COMMON_SRC:%=$(HOST)/%.o)
@@ -64,6 +64,9 @@ HOST_AUDIO = $(HOST)/scumm/audio_null.o $(HOST)/scumm/synth.o $(HOST)/scumm/paul
 
 $(HOST)/scummrun: $(HOST)/scummrun.o $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/display_host.o $(HOST_AUDIO)
 	$(HOSTCC) $(HOSTCFLAGS) $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/display_host.o $(HOST_AUDIO) $< -o $@
+
+# The converter's strip decoding is the slow part of installing a game.
+$(OUT)/convert.o: CFLAGS += -O2
 
 $(OUT)/%.o: src/%.c $(HEADERS) | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@
