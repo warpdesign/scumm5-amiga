@@ -68,7 +68,21 @@ $(HOST)/scummrun: $(HOST)/scummrun.o $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/
 # The converter's strip decoding is the slow part of installing a game.
 $(OUT)/convert.o: CFLAGS += -O2
 # The AROS headers' library call macros use register variables.
-$(OUT)/launcher.o: CFLAGS += -Wno-volatile-register-var
+$(OUT)/launcher.o: CFLAGS += -Wno-volatile-register-var -I$(OUT)
+$(OUT)/launcher.o: $(OUT)/version.h
+
+# Shown by the launcher's About box; leave empty until the repository exists.
+REPO_URL ?= https://github.com/warpdesign/scumm5-amiga
+
+# Rewritten only when the version text changes, so the launcher is not
+# rebuilt at every make. "+" after the hash: built with uncommitted changes.
+$(OUT)/version.h: FORCE | $(OUT)
+	@v=$$(git describe --always --dirty=+ 2>/dev/null || echo unknown); \
+	printf '#define SCUMM5_VERSION "%s, %s"\n#define SCUMM5_REPO "%s"\n' "$$v" "$$(date +%Y-%m-%d)" "$(REPO_URL)" > $@.tmp; \
+	cmp -s $@.tmp $@ || mv $@.tmp $@; rm -f $@.tmp
+
+.PHONY: FORCE
+FORCE:
 
 $(OUT)/%.o: src/%.c $(HEADERS) | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@

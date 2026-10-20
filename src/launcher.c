@@ -26,6 +26,7 @@
 #include "convert.h"
 #include "detect.h"
 #include "launcher.h"
+#include "version.h"
 
 struct IntuitionBase *IntuitionBase;
 struct Library *GadToolsBase, *AslBase;
@@ -42,6 +43,7 @@ static struct Screen *scr;
 static APTR vi;
 static struct DrawInfo *dri;
 static struct Window *win;
+static struct Menu *menus;
 static struct Gadget *glist, *g_list, *g_start, *g_remove, *g_status;
 static struct List games;
 static struct Node nodes[MAX_LISTED];
@@ -114,6 +116,31 @@ static LONG ask(const char *body, const char *buttons, APTR args)
 static void tell(const char *body, APTR args)
 {
 	ask(body, "OK", args);
+}
+
+enum { M_ABOUT = 1, M_QUIT };
+
+static struct NewMenu menu_def[] = {
+	{ NM_TITLE, (CONST_STRPTR)"Project", 0, 0, 0, 0 },
+	{ NM_ITEM, (CONST_STRPTR)"About...", (CONST_STRPTR)"?", 0, 0, (APTR)M_ABOUT },
+	{ NM_ITEM, NM_BARLABEL, 0, 0, 0, 0 },
+	{ NM_ITEM, (CONST_STRPTR)"Quit", (CONST_STRPTR)"Q", 0, 0, (APTR)M_QUIT },
+	{ NM_END, 0, 0, 0, 0, 0 },
+};
+
+static void about(void)
+{
+	ULONG args[2];
+
+	args[0] = (ULONG)SCUMM5_VERSION;
+	args[1] = (ULONG)SCUMM5_REPO;
+	tell(SCUMM5_REPO[0]
+	     ? TITLE " for the Amiga A1200\nVersion %s\n\n"
+	       "A SCUMM v5 interpreter adapted from ScummVM.\n"
+	       "Free software under the GNU GPL, version 3 or later.\n\n%s"
+	     : TITLE " for the Amiga A1200\nVersion %s\n\n"
+	       "A SCUMM v5 interpreter adapted from ScummVM.\n"
+	       "Free software under the GNU GPL, version 3 or later.", args);
 }
 
 /* ---- the game list ---- */
@@ -563,9 +590,20 @@ static int open_main(void)
 	struct NewGadget ng;
 	struct Gadget *g;
 	WORD fh = scr->Font->ta_YSize, left = scr->WBorLeft + 8, top = scr->WBorTop + fh + 1 + 6;
-	WORD w = 380, bw = (380 - 3 * 6) / 4, bh = fh + 6, lvh = fh * 6 + 4, y;
+	WORD w = 380, bh = fh + 6, lvh = fh * 6 + 4, y, bw[4], x, sum = 0;
 	static const char *const labels[4] = { "_Start", "_Add game...", "_Remove", "_Quit" };
 	int i;
+
+	/* each button fits its label, the spare width shared out */
+	for (i = 0; i < 4; i++) {
+		const char *t = labels[i] + 1;
+		bw[i] = (WORD)(TextLength(&scr->RastPort, (CONST_STRPTR)t, (ULONG)strlen(t)) + 16);
+		sum += bw[i];
+	}
+	if (sum + 3 * 6 > w)
+		w = (WORD)(sum + 3 * 6);
+	for (i = 0; i < 4; i++)
+		bw[i] += (WORD)((w - 3 * 6 - sum) / 4);
 
 	memset(&ng, 0, sizeof(ng));
 	ng.ng_TextAttr = scr->Font;
@@ -584,10 +622,12 @@ static int open_main(void)
 	ng.ng_GadgetID = G_STATUS;
 	g_status = g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (IPTR)status, TAG_DONE);
 	y += fh + 8;
-	for (i = 0; i < 4; i++) {
-		ng.ng_LeftEdge = left + i * (bw + 6);
+	for (i = 0, x = left; i < 4; x += bw[i] + 6, i++) {
+		if (i == 3)
+			bw[i] = (WORD)(left + w - x);
+		ng.ng_LeftEdge = x;
 		ng.ng_TopEdge = y;
-		ng.ng_Width = bw;
+		ng.ng_Width = bw[i];
 		ng.ng_Height = bh;
 		ng.ng_GadgetText = (UBYTE *)labels[i];
 		ng.ng_GadgetID = G_START + i;
@@ -605,10 +645,19 @@ static int open_main(void)
 			     WA_InnerWidth, w + 16, WA_InnerHeight, y + bh + 8 - (scr->WBorTop + fh + 1),
 			     WA_DragBar, TRUE, WA_DepthGadget, TRUE, WA_CloseGadget, TRUE, WA_Activate, TRUE,
 			     WA_AutoAdjust, TRUE, WA_Gadgets, (IPTR)glist,
+			     WA_NewLookMenus, TRUE,
 			     WA_IDCMP, LISTVIEWIDCMP | BUTTONIDCMP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW |
-					   IDCMP_VANILLAKEY, TAG_DONE);
+					   IDCMP_VANILLAKEY | IDCMP_MENUPICK, TAG_DONE);
 	if (!win)
 		return 0;
+	if ((menus = CreateMenusA(menu_def, NULL))) {
+		if (LayoutMenus(menus, vi, GTMN_NewLookMenus, TRUE, TAG_DONE))
+			SetMenuStrip(win, menus);
+		else {
+			FreeMenus(menus);
+			menus = 0;
+		}
+	}
 	GT_RefreshWindow(win, NULL);
 	return 1;
 }
@@ -633,6 +682,19 @@ static int run(void)
 			if (cls == IDCMP_REFRESHWINDOW) {
 				GT_BeginRefresh(win);
 				GT_EndRefresh(win, TRUE);
+				continue;
+			}
+			if (cls == IDCMP_MENUPICK) {
+				while (code != MENUNULL) {
+					struct MenuItem *item = ItemAddress(menus, code);
+					if (!item)
+						break;
+					if (GTMENUITEM_USERDATA(item) == (APTR)M_QUIT)
+						return 0;
+					if (GTMENUITEM_USERDATA(item) == (APTR)M_ABOUT)
+						about();
+					code = item->NextSelect;
+				}
 				continue;
 			}
 			if (cls == IDCMP_GADGETUP)
@@ -703,9 +765,14 @@ int launcher_run(char *pack, int pack_size, char *rec, int rec_size)
 		go = 0;
 	}
 out:
-	if (win)
+	if (win) {
+		if (menus)
+			ClearMenuStrip(win);
 		CloseWindow(win);
+	}
 	win = 0;
+	FreeMenus(menus);
+	menus = 0;
 	FreeGadgets(glist);
 	glist = 0;
 	if (dri)

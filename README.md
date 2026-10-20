@@ -2,6 +2,8 @@
 
 A dedicated, planar-native SCUMM v5 interpreter for an unexpanded Amiga A1200.
 
+Repository: https://github.com/warpdesign/scumm5-amiga
+
 Target games (same interpreter, both SCUMM v5, 256-colour VGA, iMUSE music):
 
 1. **Monkey Island 2, DOS** (first). Requirement: 256-colour graphics + music.
