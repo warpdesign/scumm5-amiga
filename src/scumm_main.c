@@ -1,7 +1,8 @@
 /* scumm5-amiga - the player: runs the game on the AGA display in real time
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Usage: scumm5 PACK [-r DEMO.REC] [-a ARENA_KB] [-n FRAMES]
+ * Usage: scumm5 [PACK [-r DEMO.REC] [-a ARENA_KB] [-n FRAMES]]
+ * Without a pack, the launcher lists the installed games and installs more.
  * Mouse and keyboard play the game, or DEMO.REC drives it with -r (then the
  * left mouse button quits). F5 opens the game's menu (save, load, quit);
  * games are saved next to the pack, as monkey2.s01 to .s99 for monkey2.s5p.
@@ -14,6 +15,7 @@
 #include "scumm/imuse.h"
 #include "scumm/synth.h"
 #include "util.h"
+#include "launcher.h"
 
 APTR GfxBase;
 
@@ -74,9 +76,17 @@ int app_main(int argc, char **argv)
 			pack = argv[n];
 		}
 	}
-	if (!pack) {
-		report("usage: scumm5 PACK [-r DEMO.REC] [-a ARENA_KB]");
+	if (!pack && argc > 1) {
+		report("usage: scumm5 [PACK [-r DEMO.REC] [-a ARENA_KB]]");
 		return 20;
+	}
+	if (!pack) {
+		static char lpack[256], lrec[256];
+		if (!launcher_run(lpack, sizeof(lpack), lrec, sizeof(lrec)))
+			return 0;
+		pack = lpack;
+		if (lrec[0])
+			rec = lrec;
 	}
 
 	if (!arena) {

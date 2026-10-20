@@ -57,8 +57,8 @@ $(OUT)/scummrun.elf: $(OUT)/scummrun.o $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/scu
 
 AMIGA_AUDIO = $(OUT)/audio_amiga.o $(OUT)/scumm/synth.o
 
-$(OUT)/scumm5.elf: $(OUT)/scumm_main.o $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/input_amiga.o $(OUT)/vbl.o $(AMIGA_AUDIO)
-	$(CC) $(LDFLAGS) $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/input_amiga.o $(OUT)/vbl.o $(AMIGA_AUDIO) $< -lgcc -o $@
+$(OUT)/scumm5.elf: $(OUT)/scumm_main.o $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/input_amiga.o $(OUT)/vbl.o $(OUT)/launcher.o $(AMIGA_AUDIO)
+	$(CC) $(LDFLAGS) $(AMIGA_COMMON) $(AMIGA_SCUMM) $(OUT)/display_amiga.o $(OUT)/input_amiga.o $(OUT)/vbl.o $(OUT)/launcher.o $(AMIGA_AUDIO) $< -lgcc -o $@
 
 HOST_AUDIO = $(HOST)/scumm/audio_null.o $(HOST)/scumm/synth.o $(HOST)/scumm/paula_host.o
 
@@ -67,6 +67,8 @@ $(HOST)/scummrun: $(HOST)/scummrun.o $(HOST_COMMON) $(HOST_SCUMM) $(HOST)/scumm/
 
 # The converter's strip decoding is the slow part of installing a game.
 $(OUT)/convert.o: CFLAGS += -O2
+# The AROS headers' library call macros use register variables.
+$(OUT)/launcher.o: CFLAGS += -Wno-volatile-register-var
 
 $(OUT)/%.o: src/%.c $(HEADERS) | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@

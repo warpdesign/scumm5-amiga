@@ -47,11 +47,48 @@ static uint32_t checksum(const uint8_t *p, uint32_t n)
 {
 	uint32_t a = 1, c = 0;
 
+	for (; n >= 4; n -= 4, p += 4) {
+		a += p[0];
+		c += a;
+		a += p[1];
+		c += a;
+		a += p[2];
+		c += a;
+		a += p[3];
+		c += a;
+	}
 	while (n--) {
 		a += *p++;
 		c += a;
 	}
 	return c << 16 ^ a;
+}
+
+/* 8 chunky pixels to their 8 plane bytes (out[p]: bit 7 - x is bit p of
+ * a[x]), an 8x8 bit transpose (Hacker's Delight, transpose8) */
+static void c2p8(const uint8_t *a, uint8_t *out)
+{
+	uint32_t x = (uint32_t)a[0] << 24 | (uint32_t)a[1] << 16 | (uint32_t)a[2] << 8 | a[3];
+	uint32_t y = (uint32_t)a[4] << 24 | (uint32_t)a[5] << 16 | (uint32_t)a[6] << 8 | a[7], t;
+
+	t = (x ^ (x >> 7)) & 0x00AA00AA;
+	x ^= t ^ (t << 7);
+	t = (y ^ (y >> 7)) & 0x00AA00AA;
+	y ^= t ^ (t << 7);
+	t = (x ^ (x >> 14)) & 0x0000CCCC;
+	x ^= t ^ (t << 14);
+	t = (y ^ (y >> 14)) & 0x0000CCCC;
+	y ^= t ^ (t << 14);
+	t = (x & 0xF0F0F0F0) | ((y >> 4) & 0x0F0F0F0F);
+	y = ((x << 4) & 0xF0F0F0F0) | (y & 0x0F0F0F0F);
+	out[7] = (uint8_t)(t >> 24);
+	out[6] = (uint8_t)(t >> 16);
+	out[5] = (uint8_t)(t >> 8);
+	out[4] = (uint8_t)t;
+	out[3] = (uint8_t)(y >> 24);
+	out[2] = (uint8_t)(y >> 16);
+	out[1] = (uint8_t)(y >> 8);
+	out[0] = (uint8_t)y;
 }
 
 /* ---- state ---- */
@@ -321,20 +358,27 @@ static void planar_strip(struct ob *o, const uint8_t *d, uint32_t len, uint32_t 
 	}
 	partial = transparent_codec(code) || code == 150;
 	flags = (transparent_codec(code) ? 1 : 0) | (partial ? 2 : 0);
-	memset(mask, 0, (size_t)height);
-	memset(cols, 0, (size_t)(8 * height));
 	for (y = 0; y < height; y++) {
-		for (x = 0; x < 8; x++) {
-			int v = px[y * 8 + x];
-			if (partial && v == trns)
-				continue;
-			mask[y] |= (uint8_t)(0x80 >> x);
-			for (p = 0; p < 8; p++)
-				if (v >> p & 1)
-					cols[p * height + y] |= (uint8_t)(0x80 >> x);
+		uint8_t row[8], planes[8], m = 0xFF;
+		const uint8_t *src = px + y * 8;
+		if (partial) {
+			m = 0;
+			for (x = 0; x < 8; x++) {
+				if (src[x] == trns) {
+					row[x] = 0;
+				} else {
+					row[x] = src[x];
+					m |= (uint8_t)(0x80 >> x);
+				}
+			}
+			src = row;
 		}
-		any |= mask[y] != 0;
-		all &= mask[y] == 0xFF;
+		mask[y] = m;
+		c2p8(src, planes);
+		for (p = 0; p < 8; p++)
+			cols[p * height + y] = planes[p];
+		any |= m != 0;
+		all &= m == 0xFF;
 	}
 	if (partial && !any) {
 		ob_u8(o, flags | 4);
@@ -507,7 +551,7 @@ static uint8_t *room_planes(const uint8_t *d, uint32_t size, uint32_t base, uint
 			    uint16_t *h_out, uint16_t *w_out)
 {
 	int32_t rmhd = child(d, 0, size, "RMHD"), rmim, im00, smap;
-	int width, height, pw, rowbytes, s, y, x, p;
+	int width, height, pw, rowbytes, s, y, p;
 	uint32_t n;
 	uint8_t *out;
 
@@ -533,13 +577,10 @@ static uint8_t *room_planes(const uint8_t *d, uint32_t size, uint32_t base, uint
 	for (s = 0; s < width / 8 && !err; s++) {
 		decode_strip(d, size, (uint32_t)smap + le32(d + smap + 8 + 4 * s), height);
 		for (y = 0; y < height; y++) {
-			uint8_t *row = out + (uint32_t)y * 8 * (uint32_t)rowbytes + (uint32_t)s;
-			for (p = 0; p < 8; p++) {
-				uint8_t v = 0;
-				for (x = 0; x < 8; x++)
-					v |= (uint8_t)(((px[y * 8 + x] >> p) & 1) << (7 - x));
-				row[p * rowbytes] = v;
-			}
+			uint8_t *row = out + (uint32_t)y * 8 * (uint32_t)rowbytes + (uint32_t)s, planes[8];
+			c2p8(px + y * 8, planes);
+			for (p = 0; p < 8; p++)
+				row[p * rowbytes] = planes[p];
 		}
 		st.done = base + (ROOM_WEIGHT - 1) * size + size / (uint32_t)(width / 8) * (uint32_t)s;
 		poll();
@@ -620,7 +661,11 @@ static int read_at(plat_file f, uint32_t off, uint8_t *buf, uint32_t n)
 		err = err ? err : CONV_ERR_READ;
 		return -1;
 	}
-	for (i = 0; i < n; i++)
+	i = 0;
+	if (!((uintptr_t)buf & 3))
+		for (; i + 4 <= n; i += 4)
+			*(uint32_t *)(buf + i) ^= 0x69696969;
+	for (; i < n; i++)
 		buf[i] ^= XOR_KEY;
 	return 0;
 }
