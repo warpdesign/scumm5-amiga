@@ -39,7 +39,7 @@ SF2 ?= $(HOME)/Documents/Dev/soundfonts/fluid-deb/x/usr/share/sounds/sf2/FluidR3
 
 all: $(AMIGA_PROGS:%=$(OUT)/%) $(HOST_PROGS:%=$(HOST)/%) $(PACK) $(if $(wildcard $(SF2)),$(BANK))
 
-AMIGA_SCUMM = $(SCUMM_SRC:%=$(OUT)/scumm/%.o) $(OUT)/costume68k.o
+AMIGA_SCUMM = $(SCUMM_SRC:%=$(OUT)/scumm/%.o) $(OUT)/costume68k.o $(OUT)/text68k.o
 HOST_SCUMM = $(SCUMM_SRC:%=$(HOST)/scumm/%.o)
 
 $(OUT) $(HOST) $(OUT)/scumm $(HOST)/scumm:

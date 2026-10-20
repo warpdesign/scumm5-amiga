@@ -210,14 +210,156 @@ static void add_linebreaks(int a, uint8_t *str, int pos, int maxwidth)
 	set_cur_id(old_id);
 }
 
+static int16_t mask_y0 = 0x7FFF, mask_y1 = -1;	/* rows with charset mask bits */
+
+static void glyph_put8(uint8_t *d, uint8_t m1, uint8_t m2, uint8_t m3)
+{
+	uint8_t m = (uint8_t)~(m1 | m2 | m3), c1 = g.charset_color_map[1], c2 = g.charset_color_map[2],
+		c3 = g.charset_color_map[3];
+	int p;
+
+	for (p = 0; p < 8; p++, d += VS_PLANE, c1 >>= 1, c2 >>= 1, c3 >>= 1)
+		*d = (uint8_t)((*d & m) | (c1 & 1 ? m1 : 0) | (c2 & 1 ? m2 : 0) | (c3 & 1 ? m3 : 0));
+}
+
+static void mark_mask_row(int row)
+{
+	if (row < mask_y0)
+		mask_y0 = (int16_t)row;
+	if (row > mask_y1)
+		mask_y1 = (int16_t)row;
+	charset_mask_used = 1;
+}
+
+struct glyph_job {
+	const uint8_t *src;
+	uint8_t *dst, *mask;
+	const uint16_t *tab;
+	uint32_t cpack;		/* bit 3p + c - 1: colour c sets plane p */
+	int16_t rows, groups, last, lmask, shift, bpp, rsh, nb;
+};
+uint32_t glyph_rows(struct glyph_job *j);
+
+/* 4 pixels of 2 bits to their colour 1, 2 and 3 masks, a nibble each */
+static uint16_t px2_masks[256];
+
+static void init_px2_masks(void)
+{
+	int v, i;
+
+	for (v = 0; v < 256; v++) {
+		uint16_t t = 0;
+		for (i = 0; i < 4; i++) {
+			int c = (v >> (6 - 2 * i)) & 3;
+			if (c)
+				t |= (uint16_t)(1 << ((3 - c) * 4 + 3 - i));
+		}
+		px2_masks[v] = t;
+	}
+}
+
+/* Glyphs of up to 2 bits per pixel and 24 pixels wide: each row becomes
+ * one 32-bit mask per colour, written to the planes a byte at a time. The
+ * source is read several pixels at a time, to keep the loops small. */
+static void draw_glyph_fast(const struct vscreen *vs, const uint8_t *src, int bpp, int x0, int y0, int width,
+			    int height, int set_mask)
+{
+	int y, x, k, nacc = 0, bit0 = (vs->xstart + x0) & 7, cols = SCREEN_WIDTH - x0;
+	uint32_t clip = cols >= width ? 0xFFFFFFFFu : cols <= 0 ? 0 : ~(0xFFFFFFFFu >> (bit0 + cols));
+	uint32_t acc = 0;
+	uint8_t *row_px = vs->pixels + (uint32_t)y0 * VS_PITCH + ((vs->xstart + x0) >> 3);
+	int nbytes = (bit0 + width + 7) >> 3, step = bpp == 1 ? 8 : 4;
+
+	if (bpp == 2 && !px2_masks[1])
+		init_px2_masks();
+#ifdef __mc68000__
+	if (y0 >= 0 && clip == 0xFFFFFFFFu && width > 0) {
+		struct glyph_job j;
+		int rows = height < vs->h - y0 ? height : vs->h - y0, gp = bpp == 1 ? 8 : 4, p;
+
+		if (rows <= 0)
+			return;
+		j.src = src;
+		j.dst = row_px;
+		j.mask = set_mask ? gfx_mask_buffer((vs->xstart + x0) >> 3, y0, 0) : 0;
+		j.tab = px2_masks;
+		j.cpack = 0;
+		for (p = 0; p < 8; p++)
+			j.cpack |= (uint32_t)((g.charset_color_map[1] >> p & 1) | (g.charset_color_map[2] >> p & 1) << 1 |
+					      (g.charset_color_map[3] >> p & 1) << 2) << (3 * p);
+		j.rows = (int16_t)rows;
+		j.groups = (int16_t)(width / gp);
+		j.last = (int16_t)(width % gp * bpp);
+		j.lmask = (int16_t)(0xFF << (8 - j.last) & 0xFF);
+		j.shift = (int16_t)(32 - bit0 - (width + gp - 1) / gp * gp);
+		j.bpp = (int16_t)bpp;
+		j.nb = (int16_t)nbytes;
+		j.rsh = (int16_t)(32 - 8 * nbytes);
+		if (glyph_rows(&j) && set_mask) {
+			charset_mask_used = 1;
+			if (y0 < mask_y0)
+				mask_y0 = (int16_t)y0;
+			if (y0 + rows - 1 > mask_y1)
+				mask_y1 = (int16_t)(y0 + rows - 1);
+		}
+		return;
+	}
+#endif
+	for (y = 0; y < height && y + y0 < vs->h; y++, row_px += VS_PITCH) {
+		uint32_t m1 = 0, m2 = 0, m3 = 0;
+		for (x = 0; x < width; x += step) {
+			int n = width - x < step ? width - x : step, nb = n * bpp;
+			uint32_t v;
+			while (nacc < nb) {
+				acc |= (uint32_t)*src++ << (24 - nacc);
+				nacc += 8;
+			}
+			v = acc >> (32 - nb);
+			acc <<= nb;
+			nacc -= nb;
+			if (bpp == 1) {
+				m1 |= v << (32 - bit0 - x - n);
+			} else {
+				uint32_t t = px2_masks[(v << (8 - nb)) & 0xFF];
+				int sh = 28 - bit0 - x;
+				m1 |= (t >> 8 & 15) << sh;
+				m2 |= (t >> 4 & 15) << sh;
+				m3 |= (t & 15) << sh;
+			}
+		}
+		if (y + y0 < 0)
+			continue;
+		m1 &= clip;
+		m2 &= clip;
+		m3 &= clip;
+		for (k = 0; k < nbytes; k++) {
+			int sh = 24 - 8 * k;
+			uint8_t b1 = (uint8_t)(m1 >> sh), b2 = (uint8_t)(m2 >> sh), b3 = (uint8_t)(m3 >> sh);
+			uint8_t m = (uint8_t)(b1 | b2 | b3);
+			if (!m)
+				continue;
+			glyph_put8(row_px + k, b1, b2, b3);
+			if (set_mask) {
+				*gfx_mask_buffer(((vs->xstart + x0) >> 3) + k, y + y0, 0) |= m;
+				mark_mask_row(y + y0);
+			}
+		}
+	}
+}
+
 /* drawBitsN into a planar virtual screen; on the main screen also sets the
  * charset mask (mask plane 0) so actors stay behind the text. */
 static void draw_glyph(int v, const uint8_t *src, int bpp, int x0, int y0, int width, int height, int set_mask)
 {
 	const struct vscreen *vs = &vscr[v];
 	int x, y, color, numbits = 8, strip, bit;
-	uint8_t bits = *src++, chunky[8], m;
+	uint8_t bits, chunky[8], m;
 
+	if (bpp <= 2 && width <= 24 && x0 >= 0) {
+		draw_glyph_fast(vs, src, bpp, x0, y0, width, height, set_mask);
+		return;
+	}
+	bits = *src++;
 	for (y = 0; y < height && y + y0 < vs->h; y++) {
 		strip = -1;
 		m = 0;
@@ -230,7 +372,7 @@ static void draw_glyph(int v, const uint8_t *src, int bpp, int x0, int y0, int w
 					planar_put8(d, chunky, m);
 					if (set_mask) {
 						*gfx_mask_buffer(strip, y + y0, 0) |= m;
-						charset_mask_used = 1;
+						mark_mask_row(y + y0);
 					}
 				}
 				strip = s2;
@@ -445,11 +587,16 @@ static void restore_charset_bg(void)
 		cs.left = -1;
 		if (!vs->h)
 			return;
-		gfx_mark_rect_dirty(cs.text_screen_id, 0, SCREEN_WIDTH, 0, vs->h, USAGE_BIT_RESTORED);
 		if (cs.text_screen_id == 0) {
-			/* text lives in the main screen under the charset mask */
+			/* text lives in the main screen under the charset mask; only
+			 * its rows change, but every strip is marked as restored */
 			int y, k, p, lights = (VAR(VAR_CURRENT_LIGHTS) & 2) && g.current_room != 0;
-			for (y = 0; y < vs->h; y++) {
+			int y1 = mask_y1 < vs->h ? mask_y1 : vs->h - 1;
+			if (mask_y0 <= y1)
+				gfx_mark_rect_dirty(0, 0, SCREEN_WIDTH, mask_y0, y1 + 1, USAGE_BIT_RESTORED);
+			else
+				gfx_mark_rect_dirty(0, 0, SCREEN_WIDTH, 0, 0, USAGE_BIT_RESTORED);
+			for (y = mask_y0; y <= y1; y++) {
 				uint8_t *m = gfx_screen_mask_buffer(0, y, 0);
 				uint8_t *f = vs_pixels(vs, 0, y), *b = vs_back_pixels(vs, 0, y);
 				for (k = 0; k < NUM_STRIPS; k++) {
@@ -463,7 +610,10 @@ static void restore_charset_bg(void)
 				}
 			}
 			charset_mask_used = 0;
+			mask_y0 = 0x7FFF;
+			mask_y1 = -1;
 		} else {
+			gfx_mark_rect_dirty(cs.text_screen_id, 0, SCREEN_WIDTH, 0, vs->h, USAGE_BIT_RESTORED);
 			memset(vs->pixels, 0, vs->size);
 		}
 	}
